@@ -1,0 +1,14 @@
+[package]
+name = "flightbag-core"
+description = "Core contracts for cycle-dated aeronautical editions, airport surface graphs and standing rules"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+world-core.workspace = true
+
+[lints]
+workspace = true
