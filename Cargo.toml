@@ -3,18 +3,33 @@ resolver = "3"
 members = [
     "crates/flightbag",
     "crates/flightbag-core",
+    "crates/flightbag-nasr",
+    "crates/flightbag-tiles",
+    "crates/flightbag-cli",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/luofang34/Flightbag"
 
 [workspace.dependencies]
 flightbag-core = { path = "crates/flightbag-core" }
+flightbag-nasr = { path = "crates/flightbag-nasr" }
+flightbag-tiles = { path = "crates/flightbag-tiles" }
+i_overlay = "4.5"
+pmtiles = { version = "0.19", default-features = false, features = ["write"] }
+quick-xml = "0.38"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
+ureq = "2.12"
 world-core = { git = "https://github.com/luofang34/world", rev = "075e2cafee7fa3dc044f28d750f6b1094d5c5ab2" }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,23 @@
+[package]
+name = "flightbag-nasr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-Rust FAA 28-day NASR fetcher and 3D Controlled/SUA airspace compiler"
+
+[lints]
+workspace = true
+
+[dependencies]
+flightbag-core.workspace = true
+i_overlay.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ureq.workspace = true
+world-core.workspace = true
+zip.workspace = true
