@@ -1,0 +1,122 @@
+name: Deploy NASR 3D Airspace to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: "FAA 28-day NASR cycle to deploy (current or YYYY-MM-DD)"
+        required: false
+        type: string
+        default: "current"
+      force_rebuild:
+        description: "Rebuild even if GitHub Release tag airac-<YYYY-MM-DD> already exists"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "flightbag-airac-pages"
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Compile NASR 3D Airspace & Deploy Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build flightbag CLI (release)
+        run: cargo build --release -p flightbag-cli
+
+      - name: Build NASR edition and stage GitHub Pages site
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CYCLE_INPUT: ${{ inputs.cycle || 'current' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild == true && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          BIN="./target/release/flightbag"
+          SITE="_site"
+          mkdir -p "$SITE/cycles/current"
+
+          probe_json="$("$BIN" probe-nasr --cycle "$CYCLE_INPUT")"
+          published="$(jq -r '.published' <<<"$probe_json")"
+          effective="$(jq -r '.cycle' <<<"$probe_json")"
+          airac_code="$(jq -r '.airac_code' <<<"$probe_json")"
+
+          if [ "$published" != "true" ]; then
+            echo "Cycle $CYCLE_INPUT ($effective / AIRAC $airac_code) is not published by FAA." >&2
+            exit 1
+          fi
+
+          tag="airac-${effective}"
+          out_dir="$SITE/cycles/current"
+
+          if [ "$FORCE_REBUILD" != "true" ] && gh release view "$tag" >/dev/null 2>&1; then
+            echo "Reusing immutable GitHub Release $tag..."
+            gh release download "$tag" -D "$out_dir" -p "airspace.pmtiles" -p "manifest.json" --clobber
+          else
+            echo "Building fresh NASR 3D airspace edition for $effective (AIRAC $airac_code)..."
+            "$BIN" build-nasr --cycle "$effective" --cache-dir data/cache --out-dir "$out_dir"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release upload "$tag" "$out_dir/airspace.pmtiles" "$out_dir/manifest.json" --clobber
+            else
+              gh release create "$tag" \
+                "$out_dir/airspace.pmtiles" \
+                "$out_dir/manifest.json" \
+                --title "FAA NASR 3D Airspace — ${effective} (AIRAC ${airac_code})" \
+                --notes "Pure-Rust 28-day NASR Controlled (Class B/C/D/E) & Special Use Airspace (P/R/W/MOA/A/NSA) 3D edition."
+            fi
+          fi
+
+          jq -n \
+            --arg current "$effective" \
+            --arg airac "$airac_code" \
+            '{
+              schema_version: 1,
+              current: {
+                effective_date: $current,
+                airac_code: $airac,
+                manifest_url: "cycles/current/manifest.json",
+                airspace_pmtiles_url: "cycles/current/airspace.pmtiles"
+              }
+            }' > "$SITE/cycles.json"
+
+          touch "$SITE/.nojekyll"
+          cat > "$SITE/index.html" <<EOF
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <title>Flightbag — NASR 3D Airspace Edition</title>
+            <style>body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:3rem auto;padding:0 1rem;color:#111}code{background:#f3f4f6;padding:2px 6px;border-radius:4px}</style>
+          </head>
+          <body>
+            <h1>Flightbag — FAA NASR 3D Airspace Edition</h1>
+            <p>Static <code>PMTiles</code> v3 vector archive with HTTP Range support for <code>maplibre-rs</code> and preflight planning.</p>
+            <ul>
+              <li><a href="cycles.json"><code>cycles.json</code></a> — deployed edition metadata</li>
+              <li><a href="cycles/current/manifest.json"><code>cycles/current/manifest.json</code></a> (Effective: <strong>${effective}</strong>, AIRAC <code>${airac_code}</code>)</li>
+              <li><a href="cycles/current/airspace.pmtiles"><code>cycles/current/airspace.pmtiles</code></a></li>
+            </ul>
+          </body>
+          </html>
+          EOF
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

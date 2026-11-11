@@ -1,0 +1,24 @@
+[package]
+name = "flightbag-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI compiler for Flightbag 28-day NASR 3D airspace editions and PMTiles archives"
+
+[[bin]]
+name = "flightbag"
+path = "src/main.rs"
+doc = false
+
+[lints]
+workspace = true
+
+[dependencies]
+flightbag-core.workspace = true
+flightbag-nasr.workspace = true
+flightbag-tiles.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

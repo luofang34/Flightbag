@@ -3,9 +3,11 @@ use alloc::vec;
 use world_core::GeodeticPosition;
 
 use crate::{
-    AIRAC_CYCLE_SECONDS, AiracCycle, AirportSurfaceGraph, AuthoritySource, ChartBounds, ChartKind,
-    EditionManifest, FacilityCode, GeorefChartRef, ParkingKind, ParkingSpot, RunwayDesignator,
-    RunwayEndSpec, SourceDigest, SurfaceNodeId,
+    AIRAC_CYCLE_SECONDS, AiracCycle, AirportSurfaceGraph, AirspaceClassification, AirspacePolygon,
+    AirspaceVolume, AltitudeDatum, AuthoritySource, ChartBounds, ChartKind,
+    ControlledAirspaceClass, ControlledLocalType, EditionManifest, FacilityCode, GeorefChartRef,
+    ParkingKind, ParkingSpot, RunwayDesignator, RunwayEndSpec, SourceDigest, SuaKind,
+    SurfaceNodeId, VerticalLimit,
 };
 
 #[test]
@@ -84,4 +86,43 @@ fn edition_manifest_and_single_copy_airport_surface_graph() {
         asset_sha256_hex: String::from(sha),
     };
     assert_eq!(chart.facility, Some(kdov));
+}
+
+#[test]
+fn airspace_volume_contracts_and_vertical_limits() {
+    let shelf = AirspaceVolume {
+        airspace_key: String::from("SEA-B-H"),
+        ident: String::from("SEA"),
+        name: String::from("SEATTLE CLASS B"),
+        sector: Some(String::from("AREA H")),
+        classification: AirspaceClassification::Controlled {
+            class: ControlledAirspaceClass::ClassB,
+            local_type: ControlledLocalType::ClassB,
+        },
+        lower: VerticalLimit::msl_ft(3_000),
+        upper: VerticalLimit::msl_ft(10_000),
+        hours_of_use: Some(String::from("CONT")),
+        controlling_agency: Some(String::from("SEATTLE TRACON")),
+        polygons: vec![AirspacePolygon {
+            exterior: vec![
+                GeodeticPosition::wgs84(47.20, -122.50, 0.0),
+                GeodeticPosition::wgs84(47.20, -122.10, 0.0),
+                GeodeticPosition::wgs84(47.70, -122.10, 0.0),
+                GeodeticPosition::wgs84(47.70, -122.50, 0.0),
+            ],
+            interiors: vec![],
+        }],
+    };
+    assert!(shelf.validate().is_ok());
+    assert_eq!(shelf.classification.class_code(), "B");
+    assert_eq!(shelf.lower.datum.renderer_datum(), "msl");
+    assert!((shelf.lower.metres() - 914.4).abs() < 1e-6);
+    assert!((shelf.upper.metres() - 3_048.0).abs() < 1e-6);
+
+    let sua = AirspaceClassification::SpecialUse(SuaKind::Restricted);
+    assert_eq!(sua.category_tag(), "sua");
+    assert_eq!(sua.class_code(), "R");
+    assert_eq!(VerticalLimit::agl_ft(700).datum, AltitudeDatum::Agl);
+    assert_eq!(VerticalLimit::SURFACE.datum.renderer_datum(), "agl");
+    assert_eq!(VerticalLimit::flight_level(180).value_ft, 18_000);
 }

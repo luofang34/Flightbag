@@ -15,6 +15,7 @@
 
 extern crate alloc;
 
+mod airspace;
 mod cycle;
 mod edition;
 mod rules;
@@ -23,6 +24,10 @@ mod surface;
 #[cfg(test)]
 mod tests;
 
+pub use airspace::{
+    AirspaceClassification, AirspacePolygon, AirspaceVolume, AltitudeDatum,
+    ControlledAirspaceClass, ControlledLocalType, METRES_PER_FOOT, SuaKind, VerticalLimit,
+};
 pub use cycle::{AIRAC_CYCLE_SECONDS, AiracCycle, FlightbagError};
 pub use edition::{AuthoritySource, EditionManifest, SourceDigest};
 pub use rules::{ChartBounds, ChartKind, GeorefChartRef, SfraKind, SpecialFlightRuleArea};

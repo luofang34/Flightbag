@@ -1,0 +1,25 @@
+[package]
+name = "flightbag-tiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure-Rust MVT 2.1 polygon/line pyramid encoder and PMTiles v3 writer for Flightbag"
+
+[lints]
+workspace = true
+
+[dependencies]
+flightbag-core.workspace = true
+flightbag-nasr.workspace = true
+i_overlay.workspace = true
+pmtiles.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+world-core.workspace = true
+
+[dev-dependencies]
+time.workspace = true
