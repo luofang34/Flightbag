@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Pure-Rust FAA 28-day NASR fetcher and 3D Controlled/SUA airspace compiler"
+description = "Experimental prototype (not for navigation or flight): pure-Rust FAA 28-day NASR fetcher and 3D Controlled/SUA airspace compiler"
 
 [lints]
 workspace = true

@@ -1,9 +1,13 @@
 # Flightbag
 
+> [!WARNING]
+> **Experimental Prototype — Not for Navigation or Flight.**
+> This repository and all generated artifacts (`airspace.pmtiles`, `manifest.json`, and GitHub Pages/Release datasets) are an **experimental software prototype** intended solely for research, 3D cartographic visualization, and simulation. They are **not** certified, verified, or approved by the FAA or any aviation authority, and **must never** be used for real-world navigation, preflight or in-flight planning, situational awareness, or operational flight decisions. Always consult current official FAA aeronautical charts, Chart Supplements, and NOTAMs.
+
 Cycle-dated, cryptographically fingerprinted **non-moving** aeronautical
-editions shared identically across real flight, EFB/C2 (`sokoly.app`), cockpit
-displays (`Indicate`), 3D/2D cartography (`maplibre-rs`) and closed-loop
-simulation (`Simulate`).
+editions shared identically across experimental EFB/C2 prototypes (`sokoly.app`),
+cockpit display research (`Indicate`), 3D/2D cartography (`maplibre-rs`), and
+closed-loop simulation (`Simulate`).
 
 ## Domain Boundary (`Flightbag` vs `world`)
 

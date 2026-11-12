@@ -1,9 +1,14 @@
 //! Core `no_std` + `alloc` contracts for published, cycle-dated aeronautical
 //! editions (`Flightbag`).
 //!
+//! > **Warning — Experimental Prototype (Not for Navigation or Flight):**
+//! > This crate and its generated datasets are unverified research prototypes
+//! > and must never be used for real-world navigation, flight planning, or
+//! > operational flight decisions.
+//!
 //! `Flightbag` owns the **non-moving** aeronautical baseline shared across
-//! real flight, EFB/C2 (`sokoly.app`), cockpit displays (`Indicate`) and
-//! closed-loop simulation (`Simulate`):
+//! experimental EFB/C2 prototypes (`sokoly.app`), cockpit display research
+//! (`Indicate`), and closed-loop simulation (`Simulate`):
 //! - [`AiracCycle`] and [`EditionManifest`]: 28-day ICAO/FAA AIRAC effective
 //!   windows (`09:01Z` activation) and multi-authority SHA-256 digests.
 //! - [`AirportSurfaceGraph`]: single-copy runway thresholds, taxiway edges,
