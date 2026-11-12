@@ -65,4 +65,17 @@ pure Rust, publishes an immutable `airac-YYYY-MM-DD` GitHub Release
 endpoints to GitHub Pages:
 
 - `cycles.json` — metadata for the deployed edition
+- `styles/airspace_vfr.json` — MapLibre VFR 3D volumetric style JSON
 - `cycles/current/airspace.pmtiles` & `cycles/current/manifest.json`
+
+## Viewing 3D Airspace in `maplibre-rs`
+
+```bash
+# Stream live from Flightbag GitHub Pages via standard --style URL
+cargo run --release -p maplibre-demo -- headed \
+  --style https://luofang34.github.io/Flightbag/styles/airspace_vfr.json
+
+# Or run 100% offline against a locally built cycle directory
+cargo run --release -p maplibre-demo -- headed \
+  --style /path/to/Flightbag/dist/cycles/current/airspace_vfr.json
+```

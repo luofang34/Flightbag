@@ -48,7 +48,8 @@ jobs:
           set -euo pipefail
           BIN="./target/release/flightbag"
           SITE="_site"
-          mkdir -p "$SITE/cycles/current"
+          mkdir -p "$SITE/cycles/current" "$SITE/styles"
+          cp styles/airspace_vfr.json "$SITE/styles/airspace_vfr.json"
 
           probe_json="$("$BIN" probe-nasr --cycle "$CYCLE_INPUT")"
           published="$(jq -r '.published' <<<"$probe_json")"
@@ -90,7 +91,8 @@ jobs:
                 effective_date: $current,
                 airac_code: $airac,
                 manifest_url: "cycles/current/manifest.json",
-                airspace_pmtiles_url: "cycles/current/airspace.pmtiles"
+                airspace_pmtiles_url: "cycles/current/airspace.pmtiles",
+                vfr_style_url: "styles/airspace_vfr.json"
               }
             }' > "$SITE/cycles.json"
 
@@ -117,6 +119,7 @@ jobs:
             <p>Static <code>PMTiles</code> v3 vector archive with HTTP Range support for <code>maplibre-rs</code> visualization and simulation experiments.</p>
             <ul>
               <li><a href="cycles.json"><code>cycles.json</code></a> — deployed edition metadata</li>
+              <li><a href="styles/airspace_vfr.json"><code>styles/airspace_vfr.json</code></a> — MapLibre VFR 3D volumetric style</li>
               <li><a href="cycles/current/manifest.json"><code>cycles/current/manifest.json</code></a> (Effective: <strong>${effective}</strong>, AIRAC <code>${airac_code}</code>)</li>
               <li><a href="cycles/current/airspace.pmtiles"><code>cycles/current/airspace.pmtiles</code></a></li>
             </ul>
