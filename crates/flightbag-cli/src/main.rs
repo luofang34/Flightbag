@@ -8,7 +8,7 @@ use flightbag_nasr::fetch::{
     UreqTransport, fetch_nasr_zip, fingerprint_local_zip, probe_nasr_published,
 };
 use flightbag_nasr::{GeoBbox, NasrAirspaceCounts, compile_nasr_airspace_zip};
-use flightbag_tiles::{build_airspace_pmtiles, write_cycle_manifest};
+use flightbag_tiles::{build_airspace_pmtiles, write_cycle_manifest, write_local_vfr_style};
 use thiserror::Error;
 
 const USAGE: &str = "\
@@ -130,6 +130,7 @@ fn run() -> Result<(), CliError> {
 
             let pmtiles_path = out_dir.join("airspace.pmtiles");
             let manifest_path = out_dir.join("manifest.json");
+            let vfr_style_path = out_dir.join("airspace_vfr.json");
             let stats = build_airspace_pmtiles(&compiled.volumes, &resolved, &pmtiles_path)?;
             let (_core_manifest, published) = write_cycle_manifest(
                 &resolved,
@@ -138,13 +139,15 @@ fn run() -> Result<(), CliError> {
                 &stats,
                 &manifest_path,
             )?;
+            write_local_vfr_style(&vfr_style_path)?;
 
             eprintln!(
-                "==> Wrote {} ({} tiles, {} bytes) + {}",
+                "==> Wrote {} ({} tiles, {} bytes), {}, and {}",
                 pmtiles_path.display(),
                 stats.tile_count,
                 stats.size_bytes,
-                manifest_path.display()
+                manifest_path.display(),
+                vfr_style_path.display()
             );
             let summary = serde_json::to_string_pretty(&published)
                 .map_err(|e| CliError::Json(e.to_string()))?;

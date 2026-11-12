@@ -37,6 +37,9 @@ pub const PROTOTYPE_DISCLAIMER: &str = "EXPERIMENTAL PROTOTYPE — NOT FOR NAVIG
 Unverified research and visualization output; never use for real-world navigation, flight planning, \
 or operational aviation decisions.";
 
+/// Canonical MapLibre VFR 3D airspace style JSON referencing `Flightbag`'s published `PMTiles`.
+pub const AIRSPACE_VFR_STYLE_JSON: &str = include_str!("../../../styles/airspace_vfr.json");
+
 /// Published JSON cycle manifest written alongside `airspace.pmtiles` for GitHub Pages and Release consumers.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublishedCycleManifest {
@@ -205,6 +208,33 @@ pub fn write_cycle_manifest(
     Ok((core_manifest, published))
 }
 
+/// Writes an offline-ready copy of [`AIRSPACE_VFR_STYLE_JSON`] to `style_path` with
+/// `sources.airspace.url` pointed at relative `"pmtiles://./airspace.pmtiles"`.
+///
+/// # Errors
+///
+/// Returns [`ArchiveError`] if the embedded style JSON cannot be rewritten or written to disk.
+pub fn write_local_vfr_style(style_path: &Path) -> Result<(), ArchiveError> {
+    let mut doc: serde_json::Value = serde_json::from_str(AIRSPACE_VFR_STYLE_JSON)
+        .map_err(|e| ArchiveError::Json(e.to_string()))?;
+    if let Some(url_slot) = doc.pointer_mut("/sources/airspace/url") {
+        *url_slot = serde_json::Value::String("pmtiles://./airspace.pmtiles".to_owned());
+    }
+    if let Some(parent) = style_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| ArchiveError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+    let mut bytes =
+        serde_json::to_vec_pretty(&doc).map_err(|e| ArchiveError::Json(e.to_string()))?;
+    bytes.push(b'\n');
+    fs::write(style_path, bytes).map_err(|source| ArchiveError::Io {
+        path: style_path.to_path_buf(),
+        source,
+    })
+}
+
 fn dataset_bounds(volumes: &[AirspaceVolume]) -> (f64, f64, f64, f64) {
     let mut agg: Option<flightbag_nasr::GeoBbox> = None;
     for vol in volumes {
@@ -308,5 +338,30 @@ mod tests {
             assert_eq!(bytes.get(..8), Some(b"PMTiles\x03".as_slice()));
         }
         drop(fs::remove_file(&out_path));
+    }
+
+    #[test]
+    fn bundled_vfr_style_parses_and_rewrites_local_pmtiles_url() {
+        let parsed: serde_json::Value =
+            serde_json::from_str(AIRSPACE_VFR_STYLE_JSON).unwrap_or_default();
+        assert_eq!(parsed.get("version").and_then(|v| v.as_u64()), Some(8));
+        assert_eq!(
+            parsed
+                .pointer("/sources/airspace/url")
+                .and_then(|v| v.as_str()),
+            Some("pmtiles://https://luofang34.github.io/Flightbag/cycles/current/airspace.pmtiles")
+        );
+
+        let tmp_style = std::env::temp_dir().join("flightbag_test_airspace_vfr.json");
+        assert!(write_local_vfr_style(&tmp_style).is_ok());
+        let local_doc: serde_json::Value =
+            serde_json::from_slice(&fs::read(&tmp_style).unwrap_or_default()).unwrap_or_default();
+        assert_eq!(
+            local_doc
+                .pointer("/sources/airspace/url")
+                .and_then(|v| v.as_str()),
+            Some("pmtiles://./airspace.pmtiles")
+        );
+        drop(fs::remove_file(&tmp_style));
     }
 }
