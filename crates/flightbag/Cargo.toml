@@ -1,6 +1,6 @@
 [package]
 name = "flightbag"
-description = "Published non-moving aeronautical editions, airport surface graphs and georeferenced charts"
+description = "Experimental prototype (not for navigation or flight): non-moving aeronautical editions, airport surface graphs and georeferenced charts"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

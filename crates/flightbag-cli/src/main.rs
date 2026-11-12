@@ -12,6 +12,8 @@ use flightbag_tiles::{build_airspace_pmtiles, write_cycle_manifest};
 use thiserror::Error;
 
 const USAGE: &str = "\
+EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.
+
 Usage:
   flightbag probe-nasr [--cycle <current|upcoming|YYYY-MM-DD>]
   flightbag build-nasr --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]

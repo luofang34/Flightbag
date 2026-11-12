@@ -1,6 +1,6 @@
 [package]
 name = "flightbag-core"
-description = "Core contracts for cycle-dated aeronautical editions, airport surface graphs and standing rules"
+description = "Experimental prototype (not for navigation or flight): core contracts for cycle-dated aeronautical editions, airport surface graphs and standing rules"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

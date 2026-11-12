@@ -75,8 +75,8 @@ jobs:
               gh release create "$tag" \
                 "$out_dir/airspace.pmtiles" \
                 "$out_dir/manifest.json" \
-                --title "FAA NASR 3D Airspace — ${effective} (AIRAC ${airac_code})" \
-                --notes "Pure-Rust 28-day NASR Controlled (Class B/C/D/E) & Special Use Airspace (P/R/W/MOA/A/NSA) 3D edition."
+                --title "FAA NASR 3D Airspace — ${effective} (AIRAC ${airac_code}) [Experimental Prototype]" \
+                --notes "**EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.** Unverified pure-Rust 28-day NASR Controlled (Class B/C/D/E) & Special Use Airspace (P/R/W/MOA/A/NSA) 3D dataset for research, visualization, and simulation only."
             fi
           fi
 
@@ -85,6 +85,7 @@ jobs:
             --arg airac "$airac_code" \
             '{
               schema_version: 1,
+              disclaimer: "EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT. Unverified research and visualization output; never use for real-world navigation, flight planning, or operational aviation decisions.",
               current: {
                 effective_date: $current,
                 airac_code: $airac,
@@ -99,12 +100,21 @@ jobs:
           <html lang="en">
           <head>
             <meta charset="utf-8">
-            <title>Flightbag — NASR 3D Airspace Edition</title>
-            <style>body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:3rem auto;padding:0 1rem;color:#111}code{background:#f3f4f6;padding:2px 6px;border-radius:4px}</style>
+            <title>Flightbag — NASR 3D Airspace (Experimental Prototype)</title>
+            <style>
+              body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:3rem auto;padding:0 1rem;color:#111}
+              code{background:#f3f4f6;padding:2px 6px;border-radius:4px}
+              .warning{background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:1rem 1.25rem;margin:1.25rem 0;color:#7f1d1d}
+              .warning strong{color:#991b1b}
+            </style>
           </head>
           <body>
             <h1>Flightbag — FAA NASR 3D Airspace Edition</h1>
-            <p>Static <code>PMTiles</code> v3 vector archive with HTTP Range support for <code>maplibre-rs</code> and preflight planning.</p>
+            <div class="warning" role="alert">
+              <strong>⚠️ EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.</strong><br>
+              This archive and metadata are unverified experimental software outputs intended solely for research, 3D cartographic visualization, and simulation. Do not use for real-world navigation, flight planning, situational awareness, or operational aviation decisions. Always consult official FAA aeronautical charts and NOTAMs.
+            </div>
+            <p>Static <code>PMTiles</code> v3 vector archive with HTTP Range support for <code>maplibre-rs</code> visualization and simulation experiments.</p>
             <ul>
               <li><a href="cycles.json"><code>cycles.json</code></a> — deployed edition metadata</li>
               <li><a href="cycles/current/manifest.json"><code>cycles/current/manifest.json</code></a> (Effective: <strong>${effective}</strong>, AIRAC <code>${airac_code}</code>)</li>

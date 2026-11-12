@@ -32,11 +32,18 @@ pub struct AirspaceArchiveStats {
     pub sha256_hex: String,
 }
 
+/// Safety disclaimer embedded in published manifests and archive metadata.
+pub const PROTOTYPE_DISCLAIMER: &str = "EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT. \
+Unverified research and visualization output; never use for real-world navigation, flight planning, \
+or operational aviation decisions.";
+
 /// Published JSON cycle manifest written alongside `airspace.pmtiles` for GitHub Pages and Release consumers.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublishedCycleManifest {
     /// Manifest schema version (`1`).
     pub schema_version: u32,
+    /// Mandatory safety disclaimer marking this dataset as non-navigational.
+    pub disclaimer: String,
     /// Edition identifier (`"flightbag-us-nasr-YYYY-MM-DD"`).
     pub edition_id: String,
     /// Four-digit ICAO/FAA `YYCC` AIRAC code.
@@ -154,6 +161,7 @@ pub fn write_cycle_manifest(
 
     let published = PublishedCycleManifest {
         schema_version: 1,
+        disclaimer: PROTOTYPE_DISCLAIMER.to_owned(),
         edition_id,
         airac_code: cycle.airac_code.clone(),
         cycle_index: cycle.cycle_index,

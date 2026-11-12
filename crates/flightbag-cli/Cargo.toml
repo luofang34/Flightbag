@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI compiler for Flightbag 28-day NASR 3D airspace editions and PMTiles archives"
+description = "Experimental prototype (not for navigation or flight): CLI compiler for Flightbag 28-day NASR 3D airspace editions and PMTiles archives"
 
 [[bin]]
 name = "flightbag"

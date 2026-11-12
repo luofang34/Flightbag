@@ -123,9 +123,9 @@ pub fn write_pmtiles_archive(
 
 fn tilejson_metadata(cycle_date: &str, airac_code: &str) -> serde_json::Value {
     serde_json::json!({
-        "name": format!("Flightbag US NASR 3D Airspace ({cycle_date} / AIRAC {airac_code})"),
-        "description": "FAA 28-day NASR Controlled Airspace (Class B, C, D, E) and Special Use Airspace (P, R, W, MOA, A, NSA) 3D volumes",
-        "attribution": "FAA National Airspace System Resources (NASR)",
+        "name": format!("Flightbag US NASR 3D Airspace ({cycle_date} / AIRAC {airac_code} — Experimental Prototype, Not for Navigation or Flight)"),
+        "description": "EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT. FAA 28-day NASR Controlled Airspace (Class B, C, D, E) and Special Use Airspace (P, R, W, MOA, A, NSA) 3D volumes for visualization and simulation only.",
+        "attribution": "FAA NASR (Experimental Prototype — Not for Navigation or Flight)",
         "version": airac_code,
         "vector_layers": [
             {

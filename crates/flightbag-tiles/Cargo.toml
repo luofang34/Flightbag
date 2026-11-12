@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Pure-Rust MVT 2.1 polygon/line pyramid encoder and PMTiles v3 writer for Flightbag"
+description = "Experimental prototype (not for navigation or flight): pure-Rust MVT 2.1 polygon/line pyramid encoder and PMTiles v3 writer for Flightbag"
 
 [lints]
 workspace = true
