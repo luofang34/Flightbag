@@ -21,6 +21,7 @@
 extern crate alloc;
 
 mod airspace;
+mod cifp;
 mod cycle;
 mod edition;
 mod rules;
@@ -32,6 +33,11 @@ mod tests;
 pub use airspace::{
     AirspaceClassification, AirspacePolygon, AirspaceVolume, AltitudeDatum,
     ControlledAirspaceClass, ControlledLocalType, METRES_PER_FOOT, SuaKind, VerticalLimit,
+};
+pub use cifp::{
+    AirwayRouteClass, AltitudeConstraintKind, CifpAirway, CifpAirwayFix, CifpProcedure,
+    CifpProcedureLeg, CifpTransition, CifpWaypointKind, PathTerminator, ProcedureKind,
+    ProcedurePhase,
 };
 pub use cycle::{AIRAC_CYCLE_SECONDS, AiracCycle, FlightbagError};
 pub use edition::{AuthoritySource, EditionManifest, SourceDigest};

@@ -53,6 +53,92 @@
       }
     },
     {
+      "id": "airspace-rim-surface-halo",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        ["!", ["get", "is_enroute_blanket"]],
+        ["==", ["get", "boundary_role"], "surface_floor"]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": 3.0,
+        "line-elevation-datum": "agl",
+        "line-color": "#fff8e8",
+        "line-width": 5.2,
+        "line-opacity": 0.82
+      }
+    },
+    {
+      "id": "airspace-rim-surface-solid",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        ["!", ["get", "is_enroute_blanket"]],
+        ["==", ["get", "boundary_role"], "surface_floor"]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": 3.0,
+        "line-elevation-datum": "agl",
+        "line-color": [
+          "match",
+          ["get", "class"],
+          "B", "#003d80",
+          "C", "#7a115c",
+          ["P", "R"], "#1e3275",
+          "#003d80"
+        ],
+        "line-width": 3.2,
+        "line-opacity": 0.96
+      }
+    },
+    {
+      "id": "airspace-rim-floor-solid",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        ["!", ["get", "is_enroute_blanket"]],
+        ["==", ["get", "boundary_role"], "floor"],
+        ["match", ["get", "class"], ["B", "C", "P", "R", "W", "A", "MOA"], true, false]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": ["get", "rim_m"],
+        "line-elevation-datum": ["get", "rim_datum"],
+        "line-color": [
+          "match",
+          ["get", "class"],
+          "B", "#0055a5",
+          ["P", "R", "W"], "#2b428c",
+          ["C", "A", "MOA"], "#881d69",
+          "#0055a5"
+        ],
+        "line-width": [
+          "match",
+          ["get", "class"],
+          ["B", "C"], 1.85,
+          1.35
+        ],
+        "line-opacity": 0.88
+      }
+    },
+    {
       "id": "airspace-volumes-vfr",
       "type": "fill-extrusion",
       "source": "airspace",
@@ -81,7 +167,7 @@
           "P", "#243b82",
           "R", "#2f4b9c",
           "W", "#3855a8",
-          "A", "#3855a8",
+          "A", "#8f3270",
           "MOA", "#8f3270",
           "NSA", "#9e2a7b",
           "#0072ce"
@@ -89,58 +175,23 @@
         "fill-extrusion-opacity": [
           "match",
           ["get", "class"],
-          "B", 0.25,
-          "C", 0.25,
-          "D", 0.21,
+          "B", 0.24,
+          "C", 0.24,
+          "D", 0.20,
           "E", [
             "match",
             ["get", "local_type"],
             "CLASS_E5", 0.11,
-            0.2
+            0.19
           ],
           "P", 0.28,
           "R", 0.18,
           "W", 0.11,
-          "A", 0.12,
-          "MOA", 0.15,
+          "A", 0.15,
+          "MOA", 0.14,
           "NSA", 0.2,
           0.2
         ]
-      }
-    },
-    {
-      "id": "airspace-rim-floor-solid",
-      "type": "line",
-      "source": "airspace",
-      "source-layer": "airspace_boundary",
-      "filter": [
-        "all",
-        ["!", ["get", "is_enroute_blanket"]],
-        ["==", ["get", "boundary_role"], "floor"],
-        ["match", ["get", "class"], ["B", "C", "P", "R", "W", "A", "MOA"], true, false]
-      ],
-      "layout": {
-        "line-join": "round",
-        "line-cap": "round"
-      },
-      "paint": {
-        "line-elevation": ["get", "rim_m"],
-        "line-elevation-datum": ["get", "rim_datum"],
-        "line-color": [
-          "match",
-          ["get", "class"],
-          "B", "#0055a5",
-          ["P", "R", "W", "A"], "#2b428c",
-          ["C", "MOA"], "#881d69",
-          "#0055a5"
-        ],
-        "line-width": [
-          "match",
-          ["get", "class"],
-          ["B", "C"], 1.9,
-          1.35
-        ],
-        "line-opacity": 0.88
       }
     },
     {
@@ -165,18 +216,18 @@
           "match",
           ["get", "class"],
           "B", "#004c99",
-          ["P", "R", "W", "A"], "#283e85",
-          ["C", "MOA"], "#881d69",
+          ["P", "R", "W"], "#283e85",
+          ["C", "A", "MOA"], "#881d69",
           "#004c99"
         ],
         "line-width": [
           "match",
           ["get", "class"],
-          ["B", "C"], 2.3,
+          ["B", "C"], 2.35,
           ["P", "R"], 1.85,
           1.45
         ],
-        "line-opacity": 0.92
+        "line-opacity": 0.94
       }
     },
     {

@@ -1,0 +1,934 @@
+{
+  "version": 8,
+  "name": "Flightbag US VFR Sectional + TAC + NASR 3D Airspace (Experimental Prototype — Not for Navigation or Flight)",
+  "projection": {
+    "type": "vertical-perspective"
+  },
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "sources": {
+    "satellite": {
+      "type": "raster",
+      "tiles": [
+        "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?blankTile=false"
+      ],
+      "tileSize": 256,
+      "minzoom": 0,
+      "maxzoom": 18,
+      "attribution": "Esri, Maxar, Earthstar Geographics, and the GIS User Community"
+    },
+    "antarctic-ice": {
+      "type": "geojson",
+      "maxzoom": 0,
+      "data": {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+              "type": "Polygon",
+              "coordinates": [
+                [
+                  [
+                    -180.0,
+                    -85.0
+                  ],
+                  [
+                    0.0,
+                    -85.0
+                  ],
+                  [
+                    180.0,
+                    -85.0
+                  ],
+                  [
+                    180.0,
+                    -90.0
+                  ],
+                  [
+                    0.0,
+                    -90.0
+                  ],
+                  [
+                    -180.0,
+                    -90.0
+                  ],
+                  [
+                    -180.0,
+                    -85.0
+                  ]
+                ]
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet",
+      "attribution": "OpenFreeMap · OpenMapTiles · OpenStreetMap"
+    },
+    "vfr_sectional": {
+      "type": "raster",
+      "url": "pmtiles://https://luofang34.github.io/Flightbag/cycles/current/vfr_sectional.pmtiles",
+      "tileSize": 256,
+      "minzoom": 0,
+      "maxzoom": 12,
+      "attribution": "FAA AeroNav VFR Sectional via Flightbag (EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT)"
+    },
+    "vfr_sectional_online": {
+      "type": "raster",
+      "tiles": [
+        "https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/VFR_Sectional/MapServer/tile/{z}/{y}/{x}"
+      ],
+      "tileSize": 256,
+      "minzoom": 9,
+      "maxzoom": 12,
+      "attribution": "FAA AeroNav VFR Sectional"
+    },
+    "vfr_terminal": {
+      "type": "raster",
+      "url": "pmtiles://https://luofang34.github.io/Flightbag/cycles/current/vfr_terminal.pmtiles",
+      "tileSize": 256,
+      "minzoom": 10,
+      "maxzoom": 12,
+      "attribution": "FAA AeroNav VFR Terminal Area Chart via Flightbag (EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT)"
+    },
+    "terrainSource": {
+      "type": "raster-dem",
+      "tiles": [
+        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "encoding": "terrarium",
+      "minzoom": 0,
+      "maxzoom": 15
+    },
+    "hillshadeSource": {
+      "type": "raster-dem",
+      "tiles": [
+        "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+      ],
+      "tileSize": 256,
+      "encoding": "terrarium",
+      "minzoom": 0,
+      "maxzoom": 15
+    },
+    "airspace": {
+      "type": "vector",
+      "url": "pmtiles://https://luofang34.github.io/Flightbag/cycles/current/airspace.pmtiles",
+      "attribution": "FAA NASR via Flightbag (EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT)"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#060e1c"
+      }
+    },
+    {
+      "id": "antarctic-ice-fill",
+      "type": "fill",
+      "source": "antarctic-ice",
+      "paint": {
+        "fill-color": "#dce6f0"
+      }
+    },
+    {
+      "id": "satellite-surface",
+      "type": "raster",
+      "source": "satellite",
+      "paint": {
+        "raster-fade-duration": 0,
+        "raster-resampling": "linear"
+      }
+    },
+    {
+      "id": "country-boundaries",
+      "type": "line",
+      "source": "openmaptiles",
+      "source-layer": "boundary",
+      "maxzoom": 7,
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "get",
+            "admin_level"
+          ],
+          2
+        ],
+        [
+          "!=",
+          [
+            "get",
+            "maritime"
+          ],
+          1
+        ]
+      ],
+      "paint": {
+        "line-color": "#8aa0b8",
+        "line-opacity": 0.45,
+        "line-width": 0.8
+      }
+    },
+    {
+      "id": "vfr-sectional-drape",
+      "type": "raster",
+      "source": "vfr_sectional",
+      "minzoom": 0,
+      "paint": {
+        "raster-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          12.8,
+          1.0,
+          14.3,
+          0.0
+        ],
+        "raster-fade-duration": 0,
+        "raster-resampling": "linear"
+      },
+      "maxzoom": 14.5
+    },
+    {
+      "id": "vfr-sectional-online-drape",
+      "type": "raster",
+      "source": "vfr_sectional_online",
+      "minzoom": 9,
+      "paint": {
+        "raster-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          12.8,
+          1.0,
+          14.3,
+          0.0
+        ],
+        "raster-fade-duration": 0,
+        "raster-resampling": "linear"
+      },
+      "maxzoom": 14.5
+    },
+    {
+      "id": "vfr-terminal-drape",
+      "type": "raster",
+      "source": "vfr_terminal",
+      "minzoom": 10,
+      "paint": {
+        "raster-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          12.8,
+          1.0,
+          14.3,
+          0.0
+        ],
+        "raster-fade-duration": 0,
+        "raster-resampling": "linear"
+      },
+      "maxzoom": 14.5
+    },
+    {
+      "id": "hills",
+      "type": "hillshade",
+      "source": "hillshadeSource",
+      "minzoom": 6,
+      "paint": {
+        "hillshade-shadow-color": "#26303d",
+        "hillshade-exaggeration": 0.22
+      }
+    },
+    {
+      "id": "airspace-rim-surface-halo",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "surface_floor"
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": 3.0,
+        "line-elevation-datum": "agl",
+        "line-color": "#fff8e8",
+        "line-width": 5.2,
+        "line-opacity": 0.82
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-rim-surface-solid",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "surface_floor"
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": 3.0,
+        "line-elevation-datum": "agl",
+        "line-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "B",
+          "#003d80",
+          "C",
+          "#7a115c",
+          [
+            "P",
+            "R"
+          ],
+          "#1e3275",
+          "#003d80"
+        ],
+        "line-width": 3.2,
+        "line-opacity": 0.96
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-rim-floor-solid",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "floor"
+        ],
+        [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "B",
+            "C",
+            "P",
+            "R",
+            "W",
+            "A",
+            "MOA"
+          ],
+          true,
+          false
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": [
+          "get",
+          "rim_m"
+        ],
+        "line-elevation-datum": [
+          "get",
+          "rim_datum"
+        ],
+        "line-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "B",
+          "#0055a5",
+          [
+            "P",
+            "R",
+            "W"
+          ],
+          "#2b428c",
+          [
+            "C",
+            "A",
+            "MOA"
+          ],
+          "#881d69",
+          "#0055a5"
+        ],
+        "line-width": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "B",
+            "C"
+          ],
+          1.85,
+          1.35
+        ],
+        "line-opacity": 0.88
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-volumes-vfr",
+      "type": "fill-extrusion",
+      "source": "airspace",
+      "source-layer": "airspace",
+      "filter": [
+        "!",
+        [
+          "get",
+          "is_enroute_blanket"
+        ]
+      ],
+      "paint": {
+        "fill-extrusion-translucent": true,
+        "fill-extrusion-vertical-gradient": true,
+        "fill-extrusion-part": [
+          "get",
+          "part"
+        ],
+        "fill-extrusion-base": [
+          "get",
+          "lower_m"
+        ],
+        "fill-extrusion-height": [
+          "get",
+          "display_upper_m"
+        ],
+        "fill-extrusion-base-datum": [
+          "get",
+          "lower_datum"
+        ],
+        "fill-extrusion-height-datum": [
+          "get",
+          "display_upper_datum"
+        ],
+        "fill-extrusion-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "B",
+          "#0072ce",
+          "C",
+          "#9e2a7b",
+          "D",
+          "#0060b8",
+          "E",
+          [
+            "match",
+            [
+              "get",
+              "local_type"
+            ],
+            "CLASS_E5",
+            "#b44692",
+            "#9e2a7b"
+          ],
+          "P",
+          "#243b82",
+          "R",
+          "#2f4b9c",
+          "W",
+          "#3855a8",
+          "A",
+          "#8f3270",
+          "MOA",
+          "#8f3270",
+          "NSA",
+          "#9e2a7b",
+          "#0072ce"
+        ],
+        "fill-extrusion-opacity": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "B",
+          0.24,
+          "C",
+          0.24,
+          "D",
+          0.2,
+          "E",
+          [
+            "match",
+            [
+              "get",
+              "local_type"
+            ],
+            "CLASS_E5",
+            0.11,
+            0.19
+          ],
+          "P",
+          0.28,
+          "R",
+          0.18,
+          "W",
+          0.11,
+          "A",
+          0.15,
+          "MOA",
+          0.14,
+          "NSA",
+          0.2,
+          0.2
+        ]
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-rim-ceiling-solid",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "ceiling"
+        ],
+        [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "B",
+            "C",
+            "P",
+            "R",
+            "W",
+            "A",
+            "MOA"
+          ],
+          true,
+          false
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": [
+          "get",
+          "rim_m"
+        ],
+        "line-elevation-datum": [
+          "get",
+          "rim_datum"
+        ],
+        "line-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "B",
+          "#004c99",
+          [
+            "P",
+            "R",
+            "W"
+          ],
+          "#283e85",
+          [
+            "C",
+            "A",
+            "MOA"
+          ],
+          "#881d69",
+          "#004c99"
+        ],
+        "line-width": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          [
+            "B",
+            "C"
+          ],
+          2.35,
+          [
+            "P",
+            "R"
+          ],
+          1.85,
+          1.45
+        ],
+        "line-opacity": 0.94
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-rim-ceiling-dashed",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "ceiling"
+        ],
+        [
+          "any",
+          [
+            "match",
+            [
+              "get",
+              "class"
+            ],
+            [
+              "D",
+              "NSA"
+            ],
+            true,
+            false
+          ],
+          [
+            "match",
+            [
+              "get",
+              "local_type"
+            ],
+            [
+              "CLASS_E2",
+              "CLASS_E3",
+              "CLASS_E4"
+            ],
+            true,
+            false
+          ]
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "butt"
+      },
+      "paint": {
+        "line-elevation": [
+          "get",
+          "rim_m"
+        ],
+        "line-elevation-datum": [
+          "get",
+          "rim_datum"
+        ],
+        "line-color": [
+          "match",
+          [
+            "get",
+            "class"
+          ],
+          "D",
+          "#004c99",
+          "#881d69"
+        ],
+        "line-dasharray": [
+          4,
+          3
+        ],
+        "line-width": 2.0,
+        "line-opacity": 0.92
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "airspace-rim-e5-transition",
+      "type": "line",
+      "source": "airspace",
+      "source-layer": "airspace_boundary",
+      "filter": [
+        "all",
+        [
+          "!",
+          [
+            "get",
+            "is_enroute_blanket"
+          ]
+        ],
+        [
+          "==",
+          [
+            "get",
+            "boundary_role"
+          ],
+          "ceiling"
+        ],
+        [
+          "==",
+          [
+            "get",
+            "local_type"
+          ],
+          "CLASS_E5"
+        ]
+      ],
+      "layout": {
+        "line-join": "round",
+        "line-cap": "round"
+      },
+      "paint": {
+        "line-elevation": [
+          "get",
+          "rim_m"
+        ],
+        "line-elevation-datum": [
+          "get",
+          "rim_datum"
+        ],
+        "line-color": "#a63884",
+        "line-width": 1.2,
+        "line-opacity": 0.52
+      },
+      "minzoom": 6
+    },
+    {
+      "id": "ocean-labels",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "water_name",
+      "maxzoom": 6.5,
+      "filter": [
+        "match",
+        [
+          "get",
+          "class"
+        ],
+        [
+          "ocean",
+          "sea"
+        ],
+        true,
+        false
+      ],
+      "layout": {
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name:en"
+          ],
+          [
+            "get",
+            "name:latin"
+          ],
+          [
+            "get",
+            "name"
+          ]
+        ],
+        "text-font": [
+          "Noto Sans Italic"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          0,
+          14,
+          4,
+          16,
+          6,
+          18
+        ],
+        "text-max-width": 8,
+        "text-pitch-alignment": "viewport"
+      },
+      "paint": {
+        "text-color": "#74c2ff",
+        "text-halo-color": "#040c1a",
+        "text-halo-width": 1.8
+      }
+    },
+    {
+      "id": "country-labels",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "place",
+      "maxzoom": 6.5,
+      "filter": [
+        "all",
+        [
+          "==",
+          [
+            "get",
+            "class"
+          ],
+          "country"
+        ],
+        [
+          "<=",
+          [
+            "coalesce",
+            [
+              "get",
+              "rank"
+            ],
+            4
+          ],
+          4
+        ]
+      ],
+      "layout": {
+        "text-field": [
+          "coalesce",
+          [
+            "get",
+            "name:en"
+          ],
+          [
+            "get",
+            "name:latin"
+          ],
+          [
+            "get",
+            "name"
+          ]
+        ],
+        "text-font": [
+          "Noto Sans Bold"
+        ],
+        "text-size": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          0,
+          11,
+          2,
+          13,
+          5,
+          16
+        ],
+        "text-max-width": 9,
+        "text-pitch-alignment": "viewport"
+      },
+      "paint": {
+        "text-color": "#ffffff",
+        "text-halo-color": "#05080f",
+        "text-halo-width": 1.8
+      }
+    }
+  ],
+  "terrain": {
+    "source": "terrainSource",
+    "exaggeration": 1
+  },
+  "center": [
+    -96.0,
+    36.0
+  ],
+  "zoom": 1.05,
+  "pitch": 0,
+  "bearing": 0
+}

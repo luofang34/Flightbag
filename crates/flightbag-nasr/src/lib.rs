@@ -12,6 +12,8 @@
 //!   evaluating geodesic arcs/circles and 3D `BASE` / `UNION` / `SUBTR` boolean operations.
 
 pub mod boolean2d;
+pub mod charts;
+pub mod cifp;
 pub mod class_airspace;
 pub mod cycles;
 pub mod fetch;
@@ -23,6 +25,16 @@ use std::path::Path;
 use flightbag_core::AirspaceVolume;
 use thiserror::Error;
 
+pub use charts::{
+    ChartProbeReport, HarvestedRasterPyramid, RasterChartSeries, ResolvedChartCycle,
+    US_CHART_BOUNDS, resolve_chart_cycle,
+};
+pub use cifp::{
+    CIFP_BASE_URL, CifpBinaryArtifact, CifpCompileError, CifpCounts, CompiledCifp, FBCIFP01_MAGIC,
+    FBCIFP01_VERSION, PublishedCifpManifest, cifp_filename, cifp_url, compile_cifp_bytes,
+    compile_cifp_zip, encode_cifp_binary, fetch_cifp_zip, fingerprint_local_cifp_zip,
+    probe_cifp_published, write_cifp_pack,
+};
 pub use cycles::{CycleSpec, NasrCycleError, ResolvedCycle};
 pub use fetch::{FetchError, NasrArchiveFingerprint, Transport, UreqTransport};
 

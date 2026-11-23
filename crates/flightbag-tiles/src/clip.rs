@@ -191,6 +191,118 @@ pub fn clip_polygons_to_tile(
     (tile_polys, boundary_lines)
 }
 
+/// Clips only those boundary segments of `polys` whose Mercator midpoints lie within `tol_merc`
+/// of `outer_perimeter`, suppressing internal step-cut chords on clipped Class D/E roofs.
+pub fn clip_perimeter_lines_to_tile(
+    polys: &[ProjectedPolygon],
+    outer_perimeter: &[ProjectedPolygon],
+    tol_merc: f64,
+    zoom: u8,
+    tile_x: u32,
+    tile_y: u32,
+) -> Vec<Vec<(i32, i32)>> {
+    let n = f64::from(1_u32 << zoom);
+    let pad = CLIP_BUFFER / TILE_EXTENT;
+    let t_min_mx = (f64::from(tile_x) - pad) / n;
+    let t_max_mx = (f64::from(tile_x) + 1.0 + pad) / n;
+    let t_min_my = (f64::from(tile_y) - pad) / n;
+    let t_max_my = (f64::from(tile_y) + 1.0 + pad) / n;
+    let tol_sq = tol_merc * tol_merc;
+
+    let mut out_lines: Vec<Vec<(i32, i32)>> = Vec::new();
+    for poly in polys {
+        if poly.max_mx < t_min_mx
+            || poly.min_mx > t_max_mx
+            || poly.max_my < t_min_my
+            || poly.min_my > t_max_my
+        {
+            continue;
+        }
+        for ring in std::iter::once(&poly.exterior).chain(poly.interiors.iter()) {
+            clip_merc_ring_filtered(
+                ring,
+                outer_perimeter,
+                tol_sq,
+                zoom,
+                tile_x,
+                tile_y,
+                &mut out_lines,
+            );
+        }
+    }
+    out_lines
+}
+
+fn clip_merc_ring_filtered(
+    merc_ring: &[[f64; 2]],
+    outer_perimeter: &[ProjectedPolygon],
+    tol_sq: f64,
+    zoom: u8,
+    tx: u32,
+    ty: u32,
+    out: &mut Vec<Vec<(i32, i32)>>,
+) {
+    let Some(&first) = merc_ring.first() else {
+        return;
+    };
+    if merc_ring.len() < 3 {
+        return;
+    }
+    let mut cur_run: Vec<(i32, i32)> = Vec::new();
+    let mut prev = first;
+    for &next in merc_ring.iter().skip(1).chain(std::iter::once(&first)) {
+        let mid = [(prev[0] + next[0]) * 0.5, (prev[1] + next[1]) * 0.5];
+        let on_outer = min_dist_sq_to_projected(mid, outer_perimeter) <= tol_sq;
+        let clipped_seg = if on_outer {
+            let a_tile = mercator01_to_tile(prev[0], prev[1], zoom, tx, ty);
+            let b_tile = mercator01_to_tile(next[0], next[1], zoom, tx, ty);
+            liang_barsky_clip(a_tile, b_tile)
+        } else {
+            None
+        };
+        if let Some(([x0, y0], [x1, y1])) = clipped_seg {
+            let p0 = (x0.round() as i32, y0.round() as i32);
+            let p1 = (x1.round() as i32, y1.round() as i32);
+            if cur_run.last().copied() != Some(p0) {
+                if cur_run.len() >= 2 {
+                    out.push(std::mem::take(&mut cur_run));
+                } else {
+                    cur_run.clear();
+                }
+                cur_run.push(p0);
+            }
+            if cur_run.last().copied() != Some(p1) {
+                cur_run.push(p1);
+            }
+        } else if cur_run.len() >= 2 {
+            out.push(std::mem::take(&mut cur_run));
+        } else {
+            cur_run.clear();
+        }
+        prev = next;
+    }
+    if cur_run.len() >= 2 {
+        out.push(cur_run);
+    }
+}
+
+fn min_dist_sq_to_projected(pt: [f64; 2], polys: &[ProjectedPolygon]) -> f64 {
+    let mut best = f64::INFINITY;
+    for poly in polys {
+        for ring in std::iter::once(&poly.exterior).chain(poly.interiors.iter()) {
+            let Some(&first) = ring.first() else {
+                continue;
+            };
+            let mut prev = first;
+            for &next in ring.iter().skip(1).chain(std::iter::once(&first)) {
+                best = best.min(point_segment_dist_sq(pt, prev, next));
+                prev = next;
+            }
+        }
+    }
+    best
+}
+
 fn project_ring(pts: &[GeodeticPosition]) -> Vec<[f64; 2]> {
     pts.iter()
         .map(|p| lon_lat_to_mercator01(p.longitude_deg, p.latitude_deg))
