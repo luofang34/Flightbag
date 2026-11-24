@@ -969,7 +969,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 [[package]]
 name = "world-core"
 version = "0.1.0"
-source = "git+https://github.com/luofang34/world?rev=075e2cafee7fa3dc044f28d750f6b1094d5c5ab2#075e2cafee7fa3dc044f28d750f6b1094d5c5ab2"
+source = "git+https://github.com/luofang34/world?rev=df649f71aa2c07666cdbade4882f5eb601512381#df649f71aa2c07666cdbade4882f5eb601512381"
 dependencies = [
  "libm",
 ]
