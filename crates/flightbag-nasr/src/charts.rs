@@ -954,6 +954,7 @@ mod tests {
                 Ok(crate::fetch::TransportResponse {
                     status: 200,
                     body: Box::new(std::io::Cursor::new(body.into_bytes())),
+                    validators: crate::fetch::UpstreamValidators::default(),
                 })
             }
         }

@@ -2,6 +2,8 @@
 //! and CIFP (`FAACIFP18`) editions, 56-day FAA Visual/Enroute raster chart `PMTiles`, and
 //! rolling SHA-256 manifests.
 
+mod index;
+
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -13,11 +15,11 @@ use flightbag_nasr::charts::{
 };
 use flightbag_nasr::cifp::{
     CifpCounts, cifp_url, compile_cifp_zip, fetch_cifp_zip, fingerprint_local_cifp_zip,
-    probe_cifp_published, write_cifp_pack,
+    write_cifp_pack,
 };
 use flightbag_nasr::cycles::{CycleSpec, now_utc, resolve_cycle};
 use flightbag_nasr::fetch::{
-    Transport, UreqTransport, fetch_nasr_zip, fingerprint_local_zip, probe_nasr_published,
+    Transport, UreqTransport, fetch_nasr_zip, fingerprint_local_zip, probe_upstream_archive,
 };
 use flightbag_nasr::{GeoBbox, NasrAirspaceCounts, compile_nasr_airspace_zip};
 use flightbag_tiles::{
@@ -32,7 +34,7 @@ const USAGE: &str = "\
 EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.
 
 Usage:
-  flightbag plan
+  flightbag plan [--now <YYYY-MM-DDTHH:MM:SSZ>]
   flightbag probe-nasr [--cycle <current|upcoming|YYYY-MM-DD>]
   flightbag probe-cifp [--cycle <current|upcoming|YYYY-MM-DD>]
   flightbag probe-charts [--cycle <current|upcoming|YYYY-MM-DD>] [--series <all|vfr-all|vfr-sectional|vfr-terminal|ifr-low|ifr-high>]
@@ -40,13 +42,17 @@ Usage:
   flightbag build-cifp --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]
   flightbag build-charts --out-dir <DIR> [--series <vfr-all|vfr-sectional|vfr-terminal|ifr-low|ifr-high|all>] [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--max-zoom <Z>] [--threads <N>]
   flightbag manifest --cycles-dir <DIR> --url-template <TEMPLATE> --out <FILE>
+  flightbag index --manifest <FILE> --out <FILE> [--now <YYYY-MM-DDTHH:MM:SSZ>] [--site-max-bytes <N>]
   flightbag sync --manifest <URL_OR_FILE> --store-dir <DIR> [--authority <SLUG>]
 ";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Command {
     Help,
-    Plan,
+    Plan {
+        now: Option<String>,
+    },
+    Index(index::IndexArgs),
     ProbeNasr {
         cycle: String,
     },
@@ -135,7 +141,8 @@ fn run() -> Result<(), CliError> {
             print!("{USAGE}");
             Ok(())
         }
-        Command::Plan => run_plan(),
+        Command::Plan { now } => run_plan(now.as_deref()),
+        Command::Index(args) => index::run_index(&args, now_utc()),
         Command::ProbeNasr { cycle } => run_probe_nasr(&cycle),
         Command::ProbeCifp { cycle } => run_probe_cifp(&cycle),
         Command::ProbeCharts { cycle, series } => run_probe_charts(&cycle, &series),
@@ -205,8 +212,11 @@ fn run() -> Result<(), CliError> {
     }
 }
 
-fn run_plan() -> Result<(), CliError> {
-    let now = now_utc();
+fn run_plan(explicit_now: Option<&str>) -> Result<(), CliError> {
+    let now = match explicit_now {
+        Some(raw) => index::parse_now(raw)?,
+        None => now_utc(),
+    };
     let nasr_cur = resolve_cycle(CycleSpec::Current, now)?;
     let nasr_next = resolve_cycle(CycleSpec::Upcoming, now)?;
     let chart_cur = resolve_chart_cycle(CycleSpec::Current, now)?;
@@ -264,7 +274,7 @@ fn run_probe_nasr(cycle: &str) -> Result<(), CliError> {
     let spec = CycleSpec::parse(cycle)?;
     let resolved = resolve_cycle(spec, now_utc())?;
     let transport = UreqTransport::new();
-    let published = probe_nasr_published(&transport, &resolved)?;
+    let probe = probe_upstream_archive(&transport, &resolved.nasr_url)?;
     let report = serde_json::json!({
         "cycle": resolved.effective_date,
         "expires_date": resolved.expires_date,
@@ -272,7 +282,8 @@ fn run_probe_nasr(cycle: &str) -> Result<(), CliError> {
         "effective_from_utc": resolved.effective_from_utc,
         "effective_until_utc": resolved.effective_until_utc,
         "url": resolved.nasr_url,
-        "published": published,
+        "published": probe.published,
+        "upstream": probe.validators,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|e| CliError::Json(e.to_string()))?;
     println!("{text}");
@@ -283,15 +294,16 @@ fn run_probe_cifp(cycle: &str) -> Result<(), CliError> {
     let spec = CycleSpec::parse(cycle)?;
     let resolved = resolve_cycle(spec, now_utc())?;
     let transport = UreqTransport::new();
-    let published = probe_cifp_published(&transport, &resolved)?;
+    let probe = probe_upstream_archive(&transport, &cifp_url(&resolved))?;
     let report = serde_json::json!({
         "cycle": resolved.effective_date,
         "expires_date": resolved.expires_date,
         "airac_code": resolved.airac_code,
         "effective_from_utc": resolved.effective_from_utc,
         "effective_until_utc": resolved.effective_until_utc,
-        "url": cifp_url(&resolved),
-        "published": published,
+        "url": probe.url,
+        "published": probe.published,
+        "upstream": probe.validators,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|e| CliError::Json(e.to_string()))?;
     println!("{text}");
@@ -660,7 +672,8 @@ fn parse_args(args: &[String]) -> Result<Command, CliError> {
     };
     match sub {
         "-h" | "--help" | "help" => Ok(Command::Help),
-        "plan" => Ok(Command::Plan),
+        "plan" => parse_plan(args),
+        "index" => index::parse_index_cmd(args),
         "probe-nasr" => parse_probe_nasr(args),
         "probe-cifp" => parse_probe_cifp(args),
         "probe-charts" => parse_probe_charts(args),
@@ -670,6 +683,22 @@ fn parse_args(args: &[String]) -> Result<Command, CliError> {
         "manifest" => parse_manifest_cmd(args),
         "sync" => parse_sync_cmd(args),
         other => Err(CliError::Usage(format!("unknown subcommand '{other}'"))),
+    }
+}
+
+fn parse_plan(args: &[String]) -> Result<Command, CliError> {
+    match args.get(1).map(String::as_str) {
+        None => Ok(Command::Plan { now: None }),
+        Some("-h" | "--help") => Ok(Command::Help),
+        Some("--now") => {
+            let val = args
+                .get(2)
+                .ok_or_else(|| CliError::Usage("missing value for --now".into()))?;
+            Ok(Command::Plan {
+                now: Some(val.clone()),
+            })
+        }
+        Some(other) => Err(CliError::Usage(format!("unknown plan argument '{other}'"))),
     }
 }
 
@@ -1146,7 +1175,16 @@ mod tests {
 
     #[test]
     fn parses_plan_probe_build_manifest_and_sync_commands() {
-        assert_eq!(parse_args(&["plan".into()]).ok(), Some(Command::Plan));
+        assert_eq!(
+            parse_args(&["plan".into()]).ok(),
+            Some(Command::Plan { now: None })
+        );
+        assert_eq!(
+            parse_args(&["plan".into(), "--now".into(), "2026-11-26T09:01:00Z".into()]).ok(),
+            Some(Command::Plan {
+                now: Some("2026-11-26T09:01:00Z".into())
+            })
+        );
 
         let probe = parse_args(&["probe-nasr".into(), "--cycle".into(), "upcoming".into()]);
         assert_eq!(

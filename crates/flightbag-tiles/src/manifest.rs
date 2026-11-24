@@ -490,25 +490,21 @@ pub fn build_rolling_manifest(
 }
 
 /// Selects the entry for `authority` active at ISO-8601 UTC timestamp `now_iso_utc`
-/// (`effective_from_utc <= now < effective_until_utc`), falling back to the latest published entry
-/// if the manifest carries only a recently expired or pre-staged edition.
+/// (`effective_from_utc <= now < effective_until_utc`), falling back to the most recent edition
+/// that has already been effective when the manifest carries no active one.
+///
+/// A pre-staged edition whose `effective_from_utc` lies after `now_iso_utc` is never returned:
+/// stale data is recognisable by its expiry, data used ahead of its effective time is not.
 pub fn select_active_entry<'a>(
     manifest: &'a RollingManifest,
     authority: &str,
     now_iso_utc: &str,
 ) -> Option<&'a RollingEntry> {
-    let active = manifest.entries.iter().find(|e| {
-        e.authority == authority
-            && e.effective_from_utc.as_str() <= now_iso_utc
-            && now_iso_utc < e.effective_until_utc.as_str()
-    });
-    active.or_else(|| {
-        manifest
-            .entries
-            .iter()
-            .rev()
-            .find(|e| e.authority == authority)
-    })
+    manifest
+        .entries
+        .iter()
+        .filter(|e| e.authority == authority && e.effective_from_utc.as_str() <= now_iso_utc)
+        .max_by(|a, b| a.effective_from_utc.cmp(&b.effective_from_utc))
 }
 
 fn expand_url_template(template: &str, effective_date: &str, file: &str) -> String {

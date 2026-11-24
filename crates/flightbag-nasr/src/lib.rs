@@ -36,7 +36,9 @@ pub use cifp::{
     probe_cifp_published, write_cifp_pack,
 };
 pub use cycles::{CycleSpec, NasrCycleError, ResolvedCycle};
-pub use fetch::{FetchError, NasrArchiveFingerprint, Transport, UreqTransport};
+pub use fetch::{
+    FetchError, NasrArchiveFingerprint, Transport, UpstreamProbe, UpstreamValidators, UreqTransport,
+};
 
 /// Optional geographic bounding box `(min_lon, min_lat, max_lon, max_lat)` in WGS-84 degrees.
 #[derive(Clone, Copy, Debug, PartialEq)]

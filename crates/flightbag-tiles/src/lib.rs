@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod mvt;
 pub mod overview;
 pub mod pyramid;
+pub mod window;
 
 use std::fs;
 use std::path::Path;
@@ -21,6 +22,10 @@ pub use manifest::{
     write_chart_manifest, write_local_vfr_sectional_style,
 };
 pub use pyramid::{MAX_ZOOM, MIN_ZOOM};
+pub use window::{
+    AuthorityEditions, CurrentAlias, CycleIndex, EditionWindow, IndexedEdition, build_cycle_index,
+    is_iso_utc_instant, select_edition_window,
+};
 
 /// Output metrics of a compiled `airspace.pmtiles` archive.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
