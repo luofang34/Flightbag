@@ -2,10 +2,12 @@
 
 pub mod archive;
 pub mod clip;
+pub mod ipfs;
 pub mod manifest;
 pub mod mvt;
 pub mod overview;
 pub mod pyramid;
+pub mod unixfs;
 pub mod window;
 
 use std::fs;
@@ -16,6 +18,10 @@ use flightbag_nasr::boolean2d::polygons_bbox;
 use flightbag_nasr::{NasrAirspaceCounts, NasrArchiveFingerprint, ResolvedCycle};
 
 pub use archive::ArchiveError;
+pub use ipfs::{
+    ArtifactCidRecord, ArtifactStorage, CID_RECORD_SUFFIX, CycleDirectory, IpfsCycle, IpfsImport,
+    IpfsOptions, IpfsPublication, PIN_RECORD_FILE, PinRecord, read_cycle_directory,
+};
 pub use manifest::{
     AIRSPACE_VFR_SECTIONAL_STYLE_JSON, PublishedChartManifest, RasterArchiveStats, RollingEntry,
     RollingManifest, build_raster_chart_pmtiles, build_rolling_manifest, select_active_entry,

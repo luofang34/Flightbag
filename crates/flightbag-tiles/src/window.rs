@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use crate::PROTOTYPE_DISCLAIMER;
+use crate::ipfs::ArtifactStorage;
 use crate::manifest::{RollingEntry, RollingManifest};
 
 /// Authority whose current edition backs the legacy top-level `current` block of the index.
@@ -65,7 +66,7 @@ pub fn is_iso_utc_instant(text: &str) -> bool {
 /// windows produce identical bytes, which lets a publisher skip redeploying an unchanged site.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CycleIndex {
-    /// Index schema version (`3`).
+    /// Index schema version (`4`).
     pub schema_version: u32,
     /// Mandatory safety disclaimer marking all editions as non-navigational.
     pub disclaimer: String,
@@ -122,11 +123,19 @@ pub struct IndexedEdition {
     pub size_bytes: u64,
     /// Lowercase SHA-256 hex digest of the artifact.
     pub sha256_hex: String,
-    /// Release download URL (HTTP `Range`, but no CORS headers: native clients only).
-    pub release_url: String,
+    /// Release download URL (HTTP `Range`, but no CORS headers: native clients only), or `None`
+    /// for an artifact stored on IPFS only.
+    pub release_url: Option<String>,
     /// Site-relative path served with CORS and HTTP `Range`, or `None` when the artifact is too
-    /// large to mirror on the static site.
+    /// large to mirror on the static site or is stored on IPFS only.
     pub site_path: Option<String>,
+    /// CIDv1 of the artifact under the rolling manifest's `ipfs.import` parameters.
+    pub ipfs_cid: Option<String>,
+    /// CID of the cycle directory; `<ipfs_directory_cid>/<file>` addresses the artifact.
+    pub ipfs_directory_cid: Option<String>,
+    /// Verified gateway URL served with CORS and HTTP `Range`, or `None` when no gateway is
+    /// known to serve the artifact.
+    pub ipfs_url: Option<String>,
 }
 
 /// Builds the [`CycleIndex`] of `manifest` at `now_iso_utc`, mirroring on the static site only
@@ -148,15 +157,17 @@ pub fn build_cycle_index(
         editions.insert(
             entry.authority.clone(),
             AuthorityEditions {
-                current: window.current.map(|e| indexed(e, site_max_bytes)),
-                upcoming: window.upcoming.map(|e| indexed(e, site_max_bytes)),
+                current: window.current.map(|e| indexed(manifest, e, site_max_bytes)),
+                upcoming: window
+                    .upcoming
+                    .map(|e| indexed(manifest, e, site_max_bytes)),
             },
         );
     }
 
     let current = select_edition_window(manifest, NASR_AUTHORITY, now_iso_utc)
         .current
-        .filter(|e| e.size_bytes <= site_max_bytes)
+        .filter(|e| on_site(e, site_max_bytes))
         .map(|e| CurrentAlias {
             effective_date: e.effective_date.clone(),
             airac_code: e.airac_code.clone(),
@@ -168,7 +179,7 @@ pub fn build_cycle_index(
         });
 
     CycleIndex {
-        schema_version: 3,
+        schema_version: 4,
         disclaimer: PROTOTYPE_DISCLAIMER.to_owned(),
         rolling_manifest_url: "manifest.json".to_owned(),
         current,
@@ -176,7 +187,20 @@ pub fn build_cycle_index(
     }
 }
 
-fn indexed(entry: &RollingEntry, site_max_bytes: u64) -> IndexedEdition {
+fn on_site(entry: &RollingEntry, site_max_bytes: u64) -> bool {
+    entry.storage == ArtifactStorage::Release && entry.size_bytes <= site_max_bytes
+}
+
+fn indexed(
+    manifest: &RollingManifest,
+    entry: &RollingEntry,
+    site_max_bytes: u64,
+) -> IndexedEdition {
+    let cycle = manifest
+        .ipfs
+        .as_ref()
+        .filter(|_| entry.ipfs_cid.is_some())
+        .and_then(|ipfs| ipfs.cycles.get(&entry.effective_date));
     IndexedEdition {
         effective_date: entry.effective_date.clone(),
         airac_code: entry.airac_code.clone(),
@@ -185,13 +209,18 @@ fn indexed(entry: &RollingEntry, site_max_bytes: u64) -> IndexedEdition {
         file: entry.file.clone(),
         size_bytes: entry.size_bytes,
         sha256_hex: entry.sha256_hex.clone(),
-        release_url: entry.url.clone(),
-        site_path: (entry.size_bytes <= site_max_bytes).then(|| {
+        release_url: (entry.storage == ArtifactStorage::Release).then(|| entry.url.clone()),
+        site_path: on_site(entry, site_max_bytes).then(|| {
             format!(
                 "{SITE_CYCLES_PREFIX}/{}/{}",
                 entry.effective_date, entry.file
             )
         }),
+        ipfs_cid: entry.ipfs_cid.clone(),
+        ipfs_directory_cid: cycle.map(|c| c.directory_cid.clone()),
+        ipfs_url: cycle
+            .and_then(|c| c.gateway_url.as_ref())
+            .map(|base| format!("{base}/{}", entry.file)),
     }
 }
 

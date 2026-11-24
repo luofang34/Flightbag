@@ -21,6 +21,9 @@ fn entry(authority: &str, file: &str, from: &str, until: &str, size_bytes: u64) 
         min_zoom: 0,
         max_zoom: 10,
         bounds: [-180.0, -90.0, 180.0, 90.0],
+        storage: ArtifactStorage::Release,
+        ipfs_cid: None,
+        mirror_urls: Vec::new(),
     }
 }
 
@@ -30,8 +33,9 @@ fn nasr(from: &str, until: &str) -> RollingEntry {
 
 fn manifest(entries: Vec<RollingEntry>) -> RollingManifest {
     RollingManifest {
-        schema_version: 1,
+        schema_version: 2,
         disclaimer: PROTOTYPE_DISCLAIMER.to_owned(),
+        ipfs: None,
         entries,
     }
 }
@@ -188,8 +192,70 @@ fn index_mirrors_only_artifacts_that_fit_the_static_site() {
     let large = index.editions["faa_vfr_sectional"].current.clone().unwrap();
     assert_eq!(large.site_path, None);
     assert_eq!(
-        large.release_url,
-        "https://example.invalid/airac-2026-10-29/vfr_sectional.pmtiles"
+        large.release_url.as_deref(),
+        Some("https://example.invalid/airac-2026-10-29/vfr_sectional.pmtiles")
+    );
+}
+
+#[test]
+fn index_points_ipfs_only_artifacts_at_the_verified_gateway() {
+    let directory = "bafybeidhfzynen2lnbbfdg6earhkw47eyo6zizifhqgiuoxiyahwfrnct4";
+    let mut airspace = nasr("2026-10-29", "2026-11-26");
+    airspace.ipfs_cid =
+        Some("bafybeif2ky23uspn5ubmudfvnlxjojvz3jhjdwvpeazhdogfhyuwevrddu".to_owned());
+    // Small enough for the static site, yet never mirrored there: its bytes are on IPFS only.
+    let mut chart = entry(
+        "faa_ifr_high",
+        "ifr_high.pmtiles",
+        "2026-10-29",
+        "2026-12-24",
+        73_311_550,
+    );
+    chart.storage = ArtifactStorage::Ipfs;
+    chart.ipfs_cid = Some("bafybeie6rdyalstlzktelcff5ypr4u4rqgifofucfj3jrppxj6enzvdt4y".to_owned());
+    let mut m = manifest(vec![airspace, chart, nasr("2026-11-26", "2026-12-24")]);
+    let mut cycles = std::collections::BTreeMap::new();
+    cycles.insert(
+        "2026-10-29".to_owned(),
+        crate::ipfs::IpfsCycle {
+            directory_cid: directory.to_owned(),
+            gateway_url: Some(format!("https://gateway.invalid/ipfs/{directory}")),
+        },
+    );
+    m.ipfs = Some(crate::ipfs::IpfsPublication {
+        import: crate::ipfs::IpfsImport::published(),
+        cycles,
+    });
+
+    let index = build_cycle_index(&m, JUST_BEFORE_CUTOVER, SITE_MAX_BYTES);
+    let chart = index.editions["faa_ifr_high"].current.clone().unwrap();
+    assert_eq!(chart.release_url, None);
+    assert_eq!(chart.site_path, None);
+    assert_eq!(chart.ipfs_directory_cid.as_deref(), Some(directory));
+    assert_eq!(
+        chart.ipfs_url,
+        Some(format!(
+            "https://gateway.invalid/ipfs/{directory}/ifr_high.pmtiles"
+        ))
+    );
+    let nasr_now = index.editions[NASR_AUTHORITY].clone();
+    let current = nasr_now.current.unwrap();
+    assert!(current.release_url.is_some() && current.site_path.is_some());
+    assert_eq!(
+        current.ipfs_url,
+        Some(format!(
+            "https://gateway.invalid/ipfs/{directory}/airspace.pmtiles"
+        ))
+    );
+    // A cycle without a recorded CID says nothing about IPFS.
+    let upcoming = nasr_now.upcoming.unwrap();
+    assert_eq!(
+        (
+            upcoming.ipfs_cid,
+            upcoming.ipfs_directory_cid,
+            upcoming.ipfs_url
+        ),
+        (None, None, None)
     );
 }
 
