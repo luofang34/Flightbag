@@ -18,7 +18,7 @@
 #   SITE_DIR        staged static site                (default _site)
 #   CACHE_DIR       upstream download cache           (default data/cache)
 #   NOW_UTC         instant override YYYY-MM-DDTHH:MM:SSZ (default wall clock)
-#   LIVE_INDEX_URL  deployed cycles.json; an identical index skips the redeploy
+#   LIVE_INDEX_URL  deployed cycles.json (manifest.json beside it); identical files skip the redeploy
 #   FORCE_REBUILD   true rebuilds both editions of every product
 #   FORCE_DEPLOY    true stages the site even when the index is unchanged
 #   DRY_RUN         true builds and stages locally but performs no Release write
@@ -209,10 +209,9 @@ ensure_edition() {
 }
 
 # --- Index ---------------------------------------------------------------------------------
-# Downloads the small manifest files of every Release that can still matter (the 56-day chart
-# edition in force started at most one 28-day cycle before the NASR one) and derives the
-# rolling manifest and the index from them, so the result reflects what is actually published
-# rather than what this run happened to build.
+# Downloads the manifest of every completely uploaded edition from the effective cycle onwards
+# and derives the rolling manifest and the index from them, so the result reflects what is
+# actually published rather than what this run happened to build.
 collect_published_manifests() {
   local floor="$1" tag date assets product dir
   rm -rf "$WORK/cycles"
@@ -230,9 +229,6 @@ collect_published_manifests() {
         "$GH" release download "$tag" -p "$(product_manifest "$product")" -D "$dir" --clobber >/dev/null
       fi
     done
-    if grep -q '^chart_.*\.json$' <<<"$assets"; then
-      "$GH" release download "$tag" -p 'chart_*.json' -D "$dir" --clobber >/dev/null
-    fi
   done < <("$GH" release list --limit 200 --json tagName --jq '.[].tagName' | sort)
 }
 
@@ -352,7 +348,7 @@ check_site_limits() {
 
 # --- Run -----------------------------------------------------------------------------------
 main() {
-  local plan now current upcoming floor product deploy=true live
+  local plan now current upcoming product deploy=true live_dir
   mkdir -p "$WORK"
   if [ -n "${NOW_UTC:-}" ]; then
     plan="$("$BIN" plan --now "$NOW_UTC")"
@@ -362,7 +358,6 @@ main() {
   now="$(jq -r '.now_utc' <<<"$plan")"
   current="$(jq -r '.faa_nasr_28_day.current.effective_date' <<<"$plan")"
   upcoming="$(jq -r '.faa_nasr_28_day.upcoming.effective_date' <<<"$plan")"
-  floor="$(jq -r '.faa_charts_56_day.current.effective_date' <<<"$plan")"
   log "instant $now: current $current, upcoming $upcoming"
 
   for product in $PRODUCTS; do
@@ -370,7 +365,7 @@ main() {
     ensure_edition "$product" "$upcoming" upcoming
   done
 
-  collect_published_manifests "$floor"
+  collect_published_manifests "$current"
   "$BIN" manifest --cycles-dir "$WORK/cycles" \
     --url-template "https://github.com/${REPO_SLUG}/releases/download/airac-{date}/{file}" \
     --out "$WORK/manifest.json" >/dev/null
@@ -392,10 +387,16 @@ main() {
     if [ "$("$GH" release view "airac-$current" --json isPrerelease --jq '.isPrerelease' 2>/dev/null || true)" = "true" ]; then
       gh_write release edit "airac-$current" --prerelease=false --latest
     fi
+    # The rolling manifest is compared as well: a re-post that changes only upstream
+    # provenance leaves the index identical but must still reach the site.
+    live_dir="$WORK/live"
+    mkdir -p "$live_dir"
     if [ "$FORCE_DEPLOY" != "true" ] && [ -n "${LIVE_INDEX_URL:-}" ] \
-      && live="$(curl -fsSL --max-time 30 "$LIVE_INDEX_URL" 2>/dev/null)" \
-      && [ "$live" = "$(cat "$WORK/cycles.json")" ]; then
-      log "deployed index is already up to date"
+      && curl -fsSL --max-time 30 -o "$live_dir/cycles.json" "$LIVE_INDEX_URL" 2>/dev/null \
+      && curl -fsSL --max-time 30 -o "$live_dir/manifest.json" "${LIVE_INDEX_URL%cycles.json}manifest.json" 2>/dev/null \
+      && cmp -s "$live_dir/cycles.json" "$WORK/cycles.json" \
+      && cmp -s "$live_dir/manifest.json" "$WORK/manifest.json"; then
+      log "deployed index and manifest are already up to date"
       deploy=false
     fi
   fi

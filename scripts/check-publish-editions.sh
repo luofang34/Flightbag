@@ -199,19 +199,22 @@ run_publisher() {
     rm -rf "$scratch/work"
     env FLIGHTBAG_BIN="$scratch/flightbag.sh" GH_BIN="$scratch/gh.sh" REPO_SLUG="example/flightbag" \
         WORK_DIR="$scratch/work" SITE_DIR="$site" CACHE_DIR="$scratch/cache" NOW_UTC="$now" \
-        GITHUB_OUTPUT="$scratch/output" LIVE_INDEX_URL="file://$scratch/live.json" "$@" \
+        GITHUB_OUTPUT="$scratch/output" LIVE_INDEX_URL="file://$scratch/live/cycles.json" "$@" \
         "$root/scripts/publish-editions.sh" >"$scratch/run.log" 2>&1
 }
 # Stands in for the Pages deployment that follows a staged site.
 deploy_if_staged() {
-    if grep -qx 'deploy=true' "$scratch/output"; then cp "$site/cycles.json" "$scratch/live.json"; fi
+    if grep -qx 'deploy=true' "$scratch/output"; then
+        mkdir -p "$scratch/live"
+        cp "$site/cycles.json" "$site/manifest.json" "$scratch/live/"
+    fi
 }
 expect_output() { grep -qx "$1" "$scratch/output" || { cat "$scratch/run.log" >&2; fail "$2: expected $1"; }; }
 expect_log() { [ "$(grep -c "$1" "$FAKE_LOG" || true)" = "$2" ] || { cat "$FAKE_LOG" >&2; fail "$3"; }; }
 expect_json() { jq -e "$2" "$1" >/dev/null || { cat "$1" >&2; fail "$3"; }; }
 post() { mkdir -p "$FAKE_UPSTREAM" && printf '%s' "$2" >"$FAKE_UPSTREAM/$1"; }
 reset_world() {
-    rm -rf "$FAKE_GH_ROOT" "$FAKE_UPSTREAM" "$site" "$scratch/live.json"
+    rm -rf "$FAKE_GH_ROOT" "$FAKE_UPSTREAM" "$site" "$scratch/live"
     mkdir -p "$FAKE_GH_ROOT" "$FAKE_UPSTREAM"
     for edition in nasr-2026-10-29 cifp-2026-10-29 nasr-2026-11-26 cifp-2026-11-26; do
         post "$edition" "first posting"

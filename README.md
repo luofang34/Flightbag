@@ -70,7 +70,7 @@ Every run does the same thing, so a delayed or dropped scheduled run is made up 
    to the cycle's Release. The next edition is published as a prerelease as soon as FAA posts
    it, weeks before it is effective.
 4. Regenerate the rolling manifest (`flightbag-manifest` Release) and `cycles.json`, and
-   redeploy GitHub Pages when `cycles.json` changed.
+   redeploy GitHub Pages when either changed.
 
 `current` is decided by the wall clock against each edition's `effective_from_utc`, so an
 edition can be downloaded ahead of time but is never `current` before its effective instant.
@@ -94,8 +94,7 @@ them work in native clients only. Artifacts above 90 MB are never copied to Page
 
 Raster chart archives (`build-charts`) are not built by the workflow: FAA's tile service
 serves only the edition in force, so a chart edition cannot be pre-staged from it, and the
-national archives exceed what Pages can host. Chart manifests uploaded to a cycle's Release
-by hand are listed in the rolling manifest and `cycles.json`.
+national archives exceed what Pages can host.
 
 ## Viewing 3D Airspace in `maplibre-rs`
 
