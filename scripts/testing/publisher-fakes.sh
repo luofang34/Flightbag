@@ -172,9 +172,10 @@ deploy_if_staged() {
         cp "$site/cycles.json" "$site/manifest.json" "$scratch/live/"
     fi
 }
-expect_output() { grep -qx "$1" "$scratch/output" || { cat "$scratch/run.log" >&2; fail "$2: expected $1"; }; }
-expect_log() { [ "$(grep -c "$1" "$FAKE_LOG" || true)" = "$2" ] || { cat "$FAKE_LOG" >&2; fail "$3"; }; }
-expect_json() { jq -e "$2" "$1" >/dev/null || { cat "$1" >&2; fail "$3"; }; }
+# The context is printed on a best-effort basis: a missing file must not hide which check failed.
+expect_output() { grep -qx "$1" "$scratch/output" || { cat "$scratch/run.log" >&2 || true; fail "$2: expected $1"; }; }
+expect_log() { [ "$(grep -c "$1" "$FAKE_LOG" || true)" = "$2" ] || { cat "$FAKE_LOG" >&2 || true; fail "$3"; }; }
+expect_json() { jq -e "$2" "$1" >/dev/null 2>&1 || { cat "$1" >&2 || true; fail "$3"; }; }
 post() { mkdir -p "$FAKE_UPSTREAM" && printf '%s' "$2" >"$FAKE_UPSTREAM/$1"; }
 reset_world() {
     rm -rf "$FAKE_GH_ROOT" "$FAKE_UPSTREAM" "$site" "$scratch/live"

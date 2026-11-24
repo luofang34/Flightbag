@@ -43,7 +43,7 @@ start_provider() {
 knob() { touch "$provider/knobs/$1"; }
 unknob() { rm -f "$provider/knobs/$1"; }
 calls() { grep -c "$1" "$provider/log" || true; }
-expect_calls() { [ "$(calls "$1")" = "$2" ] || { cat "$scratch/run.log" "$provider/log" >&2; fail "$3"; }; }
+expect_calls() { [ "$(calls "$1")" = "$2" ] || { cat "$scratch/run.log" "$provider/log" >&2 || true; fail "$3"; }; }
 forget_calls() { : >"$provider/log"; }
 # CID of a single-leaf file, derived apart from the code under test.
 raw_cid() {
@@ -79,7 +79,7 @@ run_ok "2026-11-24T07:00:00Z"
 expect_output 'deploy=false' "idle run"
 [ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG" >&2; fail "idle run must not write a Release"; }
 
-# An edition published before companions existed gets one without being rebuilt.
+# A Release that lacks a companion gets one without the edition being rebuilt.
 rm "$rel/airac-2026-10-29/airspace.pmtiles.cid.json"
 run_ok "2026-11-24T08:00:00Z"
 expect_log '^build ' 0 "a missing companion must not trigger a rebuild"
@@ -129,9 +129,23 @@ expect_output 'deploy=false' "idle pinned run"
 knob gateway-down
 run_ok "2026-11-24T16:00:00Z" "${kubo_env[@]}"
 grep -q 'fails its probe' "$scratch/run.log" || fail "a failing recorded gateway must be reported"
+[ ! -s "$provider/log" ] || fail "a gateway outage must not cause uploads while the node holds the cycle"
 expect_output 'deploy=false' "run with a failing recorded gateway"
 expect_output 'required_failed=false' "run with a failing recorded gateway"
 unknob gateway-down
+
+# A provider that dropped a recorded cycle gets it again, without touching the Release.
+for pinned in "$directory" "$airspace_cid" "$(raw_cid "$rel/airac-2026-10-29/cifp_procedures.bin")"; do
+    curl -fsS -X POST "$base/api/v0/pin/rm?arg=$pinned" >/dev/null
+done
+forget_calls
+run_ok "2026-11-24T19:00:00Z" "${kubo_env[@]}"
+expect_calls '^kubo add flightbag-airac-2026-10-29/' 2 "a dropped cycle must be uploaded again"
+expect_calls "^kubo pin flightbag-airac-2026-10-29 $directory\$" 1 "a dropped cycle must be pinned again"
+[ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG" >&2; fail "restoring a dropped cycle must not write a Release"; }
+expect_output 'deploy=false' "run restoring a dropped cycle"
+curl -fsS "$(jq -r "$nasr_current.ipfs_url" "$site/cycles.json")" | cmp -s - "$rel/airac-2026-10-29/airspace.pmtiles" \
+    || fail "the gateway must serve a restored cycle"
 
 # --- Retention window ----------------------------------------------------------------------
 # Pins of other content, and an old-looking pin of a CID that is still listed, must survive.

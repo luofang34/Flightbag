@@ -222,7 +222,7 @@ fn companions_with_other_import_parameters_are_refused() {
 }
 
 #[test]
-fn manifests_written_before_cids_existed_still_parse() {
+fn manifests_without_ipfs_fields_parse() {
     let old = r#"{"schema_version":1,"disclaimer":"d","entries":[{"authority":"faa_nasr",
         "effective_date":"2026-10-29","expires_date":"2026-11-26","airac_code":"2611",
         "effective_from_utc":"2026-10-29T09:01:00Z","effective_until_utc":"2026-11-26T09:01:00Z",

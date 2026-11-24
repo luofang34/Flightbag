@@ -286,7 +286,8 @@ kubo_pin_cycle() {
 # would make the published index depend on the gateway's mood.
 ipfs_pin_cycle() {
   local date="$1" dir="$2"
-  local scratch="$IPFS_SCRATCH/$date" report directory providers recorded outcome on_node=false at_service=false
+  local scratch="$IPFS_SCRATCH/$date" report directory providers recorded outcome
+  local on_node=false at_service=false listed=false
   ipfs_pinning_configured || return 0
   if [ "$((SECONDS - IPFS_STARTED_S))" -ge "$IPFS_RUN_BUDGET_S" ]; then
     warn "IPFS: the time budget of this run is spent; $date is left to the next run"
@@ -301,9 +302,11 @@ ipfs_pin_cycle() {
   recorded="$(jq -c '{directory_cid, gateway, providers}' "$dir/$IPFS_PIN_RECORD" 2>/dev/null || true)"
   if [ -n "$IPFS_GATEWAY_URL" ] && [ "$recorded" = "$(jq -cn --arg d "$directory" \
     --arg g "$IPFS_GATEWAY_URL" --argjson p "$providers" '{directory_cid: $d, gateway: $g, providers: $p}')" ]; then
-    gateway_probe_cycle "$report" "$scratch" \
-      || warn "IPFS: the gateway recorded for $date ($directory) fails its probe"
-    return 0
+    gateway_probe_cycle "$report" "$scratch" && return 0
+    # The record stays, so the published index does not follow the gateway's mood; the
+    # providers are asked again in case one of them dropped the cycle.
+    warn "IPFS: the gateway recorded for $date ($directory) fails its probe"
+    listed=true
   fi
 
   if [ -n "${IPFS_PIN_SERVICE_URL:-}" ] && psa_holds "$directory"; then at_service=true; fi
@@ -323,9 +326,10 @@ ipfs_pin_cycle() {
   log "IPFS: $date is pinned as $directory"
   [ -n "$IPFS_GATEWAY_URL" ] || return 0
   if ! gateway_probe_cycle "$report" "$scratch"; then
-    warn "IPFS: $date is pinned but the gateway does not serve it yet; it is not listed"
+    [ "$listed" = "true" ] || warn "IPFS: $date is pinned but the gateway does not serve it yet; it is not listed"
     return 0
   fi
+  [ "$listed" = "false" ] || return 0
   jq -n --arg date "$date" --arg d "$directory" --arg g "$IPFS_GATEWAY_URL" --argjson p "$providers" \
     '{schema_version: 1, effective_date: $date, directory_cid: $d, gateway: $g, providers: $p}' \
     >"$dir/$IPFS_PIN_RECORD"
