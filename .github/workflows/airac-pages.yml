@@ -1,54 +1,48 @@
-# Publishes cycle-stamped FAA 28-day NASR 3D Airspace and 56-day FAA Visual/Enroute
-# raster chart PMTiles archives using the same automated dual-window (`current` +
-# best-effort `upcoming` preview) release & rolling-manifest architecture as `v99n62`:
-#   - Scheduled Tuesdays & Fridays at 06:17 UTC (`17 6 * * 2,5`) + manual `workflow_dispatch`;
-#   - One immutable GitHub Release per cycle (`airac-YYYY-MM-DD`) holding `.pmtiles` + `.sha256`
-#     companions + provenance manifests (re-uploaded with `--clobber` if FAA re-posts a preview);
-#   - Rolling pointer `manifest.json` on the `flightbag-manifest` GitHub Release:
-#     `https://github.com/{owner}/{repo}/releases/download/flightbag-manifest/manifest.json`;
-#   - Static GitHub Pages mirror (`cycles.json`, `manifest.json`, `styles/`, `cycles/current/`).
+# Publishes FAA 28-day NASR airspace and CIFP editions: one Release per cycle
+# (`airac-YYYY-MM-DD`), a rolling manifest Release (`flightbag-manifest`), and a GitHub Pages
+# site listing the effective and the pre-staged edition in `cycles.json`.
+#
+# Every run is the same idempotent `scripts/publish-editions.sh`; what is `current` depends on
+# the wall clock against each edition's effective time, never on which trigger fired. GitHub
+# may start scheduled runs late or drop them, so a later run always completes the work.
 
-name: Publish Flightbag NASR & Aeronautical Charts
+name: Publish Flightbag Editions
 
 on:
   schedule:
-    # Tuesdays and Fridays, 06:17Z — comfortably after FAA posting times,
-    # frequent enough to catch newly posted 28-day NASR and 56-day chart previews.
-    - cron: "17 6 * * 2,5"
+    # FAA posts an edition weeks before it is effective, on no fixed minute. Probing every
+    # three hours builds a new posting the same day; a run that finds nothing new exits after
+    # the probes without touching Releases or Pages.
+    - cron: "23 */3 * * *"
+    # Editions become effective on AIRAC Thursdays at 09:01Z. These runs move `current` to the
+    # pre-staged edition right after the cutover; on other Thursdays they find nothing to do.
+    - cron: "6,21,41 9 * * 4"
   workflow_dispatch:
     inputs:
-      cycle:
-        description: "FAA cycle override (current, upcoming, or YYYY-MM-DD)"
-        required: false
-        type: string
-        default: "current"
-      chart_series:
-        description: "Raster chart series to publish alongside NASR (vfr-all, vfr-terminal, all, or none)"
-        required: false
-        type: string
-        default: "vfr-all"
       force_rebuild:
-        description: "Rebuild even if GitHub Release tag airac-<YYYY-MM-DD> already holds the artifact"
+        description: "Rebuild the current and upcoming editions even if their Releases are complete"
         required: false
         type: boolean
         default: false
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
+# Runs queue instead of overlapping so two runs never upload to the same Release at once.
 concurrency:
   group: "flightbag-airac-pages"
   cancel-in-progress: false
 
 jobs:
   publish:
-    name: Compile NASR 3D Airspace & Charts + Publish Releases & Pages
+    name: Build new editions, update Releases, stage Pages
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    outputs:
+      deploy: ${{ steps.publish.outputs.deploy }}
+      required_failed: ${{ steps.publish.outputs.required_failed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,205 +52,49 @@ jobs:
       - name: Build flightbag CLI (release)
         run: cargo build --locked --release -p flightbag-cli
 
-      - name: Inspect active & upcoming FAA 28-day / 56-day cycle schedule
-        run: ./target/release/flightbag plan
-
-      - name: Build current & upcoming NASR + Chart editions and publish Releases
+      - name: Publish editions and stage the Pages site
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CYCLE_INPUT: ${{ inputs.cycle || 'current' }}
-          CHART_SERIES: ${{ inputs.chart_series || 'vfr-all' }}
           FORCE_REBUILD: ${{ inputs.force_rebuild == true && 'true' || 'false' }}
+          # A manual run always redeploys, which also publishes style or page changes.
+          FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: |
-          set -euo pipefail
-          BIN="./target/release/flightbag"
-          CYCLES_ROOT="dist/cycles"
-          SITE="_site"
-          mkdir -p "$CYCLES_ROOT" "$SITE/cycles/current" "$SITE/styles"
-          cp styles/airspace_vfr.json "$SITE/styles/airspace_vfr.json"
-          cp styles/airspace_vfr_sectional.json "$SITE/styles/airspace_vfr_sectional.json"
+          owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
+          export LIVE_INDEX_URL="https://${owner}.github.io/${GITHUB_REPOSITORY#*/}/cycles.json"
+          ./scripts/publish-editions.sh
 
-          ensure_nasr_cycle() {
-            local spec="$1"
-            local required="$2"
-            local probe_json
-            if ! probe_json="$("$BIN" probe-nasr --cycle "$spec")"; then
-              if [ "$required" = "true" ]; then exit 1; else return 0; fi
-            fi
-            local published effective airac_code tag cycle_dir
-            published="$(jq -r '.published' <<<"$probe_json")"
-            effective="$(jq -r '.cycle' <<<"$probe_json")"
-            airac_code="$(jq -r '.airac_code' <<<"$probe_json")"
-            if [ "$published" != "true" ]; then
-              if [ "$required" = "true" ]; then
-                echo "::error::Required NASR cycle $spec ($effective / AIRAC $airac_code) is not published by FAA."
-                exit 1
-              else
-                echo "::warning::Preview NASR cycle $effective (AIRAC $airac_code) not yet posted by FAA; publishing current only"
-                return 0
-              fi
-            fi
-
-            tag="airac-${effective}"
-            cycle_dir="$CYCLES_ROOT/$effective"
-            mkdir -p "$cycle_dir"
-            if [ "$FORCE_REBUILD" != "true" ] && gh release download "$tag" -D "$cycle_dir" -p "airspace.pmtiles" -p "airspace.pmtiles.sha256" -p "manifest.json" --clobber >/dev/null 2>&1; then
-              echo "Reused NASR 3D Airspace from GitHub Release $tag"
-            else
-              "$BIN" build-nasr --cycle "$effective" --cache-dir data/cache --out-dir "$cycle_dir"
-            fi
-          }
-
-          ensure_charts_cycle() {
-            local spec="$1"
-            local required="$2"
-            if [ "$CHART_SERIES" = "none" ]; then
-              return 0
-            fi
-            local probe_json
-            if ! probe_json="$("$BIN" probe-charts --cycle "$spec" --series "$CHART_SERIES")"; then
-              if [ "$required" = "true" ]; then exit 1; else return 0; fi
-            fi
-            local all_pub effective cycle_dir tag
-            all_pub="$(jq -r 'all(.[]; .archive_published == true)' <<<"$probe_json")"
-            effective="$(jq -r '.[0].effective_date' <<<"$probe_json")"
-            if [ "$all_pub" != "true" ]; then
-              if [ "$required" = "true" ]; then
-                echo "::error::Required 56-day FAA chart cycle $effective is not published."
-                exit 1
-              else
-                echo "::warning::Preview 56-day FAA chart cycle $effective not yet posted by FAA; keeping current chart edition"
-                return 0
-              fi
-            fi
-
-            tag="airac-${effective}"
-            cycle_dir="$CYCLES_ROOT/$effective"
-            mkdir -p "$cycle_dir"
-            if [ "$FORCE_REBUILD" != "true" ] && gh release download "$tag" -D "$cycle_dir" -p "*.pmtiles" -p "*.pmtiles.sha256" -p "chart_*.json" --clobber >/dev/null 2>&1 && ls "$cycle_dir"/chart_*.json >/dev/null 2>&1; then
-              echo "Reused FAA raster chart PMTiles from GitHub Release $tag"
-            else
-              "$BIN" build-charts --cycle "$effective" --series "$CHART_SERIES" --cache-dir data/cache --out-dir "$cycle_dir"
-            fi
-          }
-
-          # 1. Required current 28-day NASR + 56-day Chart cycles:
-          ensure_nasr_cycle "$CYCLE_INPUT" "true"
-          ensure_charts_cycle "$CYCLE_INPUT" "true"
-
-          # 2. Best-effort upcoming preview cycles (never blocks current):
-          if [ "$CYCLE_INPUT" = "current" ]; then
-            ensure_nasr_cycle "upcoming" "false"
-            ensure_charts_cycle "upcoming" "false"
-          fi
-
-          # 3. Upload immutable per-cycle GitHub Releases (`airac-YYYY-MM-DD`) with `--clobber`:
-          for cycle_dir in "$CYCLES_ROOT"/*; do
-            [ -d "$cycle_dir" ] || continue
-            date="$(basename "$cycle_dir")"
-            case "$date" in
-              [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
-              *) echo "::error::unexpected cycle directory $date"; exit 1 ;;
-            esac
-            tag="airac-${date}"
-            gh release view "$tag" >/dev/null 2>&1 || \
-              gh release create "$tag" \
-                --title "Flightbag FAA NASR & Charts — ${date} [Experimental Prototype]" \
-                --notes "**EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.** Cycle-stamped FAA 28-day NASR 3D Airspace and 56-day Aeronautical Chart PMTiles effective ${date}. Verify every archive with its .sha256 companion."
-            shopt -s nullglob
-            assets=("$cycle_dir"/*.pmtiles "$cycle_dir"/*.sha256 "$cycle_dir"/manifest.json "$cycle_dir"/chart_*.json)
-            shopt -u nullglob
-            if [ "${#assets[@]}" -gt 0 ]; then
-              gh release upload "$tag" "${assets[@]}" --clobber
-            fi
-          done
-
-          # 4. Generate and publish rolling `flightbag-manifest` Release (`manifest.json`):
-          "$BIN" manifest \
-            --cycles-dir "$CYCLES_ROOT" \
-            --url-template "https://github.com/${{ github.repository }}/releases/download/airac-{date}/{file}" \
-            --out dist/manifest.json
-          gh release view "flightbag-manifest" >/dev/null 2>&1 || \
-            gh release create "flightbag-manifest" \
-              --title "Flightbag Rolling Manifest [Experimental Prototype]" \
-              --notes "Rolling pointer to published FAA 28-day NASR 3D Airspace and 56-day Aeronautical Chart PMTiles. Stable URL: releases/download/flightbag-manifest/manifest.json"
-          gh release upload "flightbag-manifest" dist/manifest.json --clobber
-
-          # 5. Stage GitHub Pages mirror (`cycles/current/*`, `manifest.json`, `cycles.json`):
-          cur_nasr_probe="$("$BIN" probe-nasr --cycle "$CYCLE_INPUT")"
-          cur_nasr_date="$(jq -r '.cycle' <<<"$cur_nasr_probe")"
-          cur_nasr_airac="$(jq -r '.airac_code' <<<"$cur_nasr_probe")"
-          cur_chart_probe="$("$BIN" probe-charts --cycle "$CYCLE_INPUT" --series vfr-all)"
-          cur_chart_date="$(jq -r '.[0].effective_date' <<<"$cur_chart_probe")"
-
-          cp "$CYCLES_ROOT/$cur_nasr_date/airspace.pmtiles" "$SITE/cycles/current/"
-          cp "$CYCLES_ROOT/$cur_nasr_date/airspace.pmtiles.sha256" "$SITE/cycles/current/"
-          cp "$CYCLES_ROOT/$cur_nasr_date/manifest.json" "$SITE/cycles/current/"
-          if [ -d "$CYCLES_ROOT/$cur_chart_date" ]; then
-            shopt -s nullglob
-            for f in "$CYCLES_ROOT/$cur_chart_date"/vfr_*.pmtiles "$CYCLES_ROOT/$cur_chart_date"/vfr_*.sha256 "$CYCLES_ROOT/$cur_chart_date"/chart_*.json; do
-              cp "$f" "$SITE/cycles/current/"
-            done
-            shopt -u nullglob
-          fi
-          cp dist/manifest.json "$SITE/manifest.json"
-
-          jq -n \
-            --arg current "$cur_nasr_date" \
-            --arg airac "$cur_nasr_airac" \
-            --arg chart_date "$cur_chart_date" \
-            '{
-              schema_version: 2,
-              disclaimer: "EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT. Unverified research and visualization output; never use for real-world navigation, flight planning, or operational aviation decisions.",
-              rolling_manifest_url: "manifest.json",
-              current: {
-                effective_date: $current,
-                chart_effective_date: $chart_date,
-                airac_code: $airac,
-                manifest_url: "cycles/current/manifest.json",
-                airspace_pmtiles_url: "cycles/current/airspace.pmtiles",
-                vfr_sectional_pmtiles_url: "cycles/current/vfr_sectional.pmtiles",
-                vfr_terminal_pmtiles_url: "cycles/current/vfr_terminal.pmtiles",
-                vfr_style_url: "styles/airspace_vfr.json",
-                vfr_sectional_style_url: "styles/airspace_vfr_sectional.json"
-              }
-            }' > "$SITE/cycles.json"
-
-          touch "$SITE/.nojekyll"
-          cat > "$SITE/index.html" <<EOF
-          <!doctype html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <title>Flightbag — NASR 3D Airspace & Aeronautical Charts (Experimental Prototype)</title>
-            <style>
-              body{font:15px/1.5 system-ui,sans-serif;max-width:760px;margin:3rem auto;padding:0 1rem;color:#111}
-              code{background:#f3f4f6;padding:2px 6px;border-radius:4px}
-              .warning{background:#fef2f2;border:2px solid #dc2626;border-radius:8px;padding:1rem 1.25rem;margin:1.25rem 0;color:#7f1d1d}
-              .warning strong{color:#991b1b}
-            </style>
-          </head>
-          <body>
-            <h1>Flightbag — FAA NASR 3D Airspace & Aeronautical Charts</h1>
-            <div class="warning" role="alert">
-              <strong>⚠️ EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.</strong><br>
-              This archive and metadata are unverified experimental software outputs intended solely for research, 3D cartographic visualization, and simulation. Do not use for real-world navigation, flight planning, situational awareness, or operational aviation decisions. Always consult official FAA aeronautical charts and NOTAMs.
-            </div>
-            <ul>
-              <li><a href="manifest.json"><code>manifest.json</code></a> — rolling SHA-256 multi-authority release manifest</li>
-              <li><a href="cycles.json"><code>cycles.json</code></a> — deployed Pages edition metadata</li>
-              <li><a href="styles/airspace_vfr.json"><code>styles/airspace_vfr.json</code></a> — MapLibre VFR 3D volumetric style</li>
-              <li><a href="styles/airspace_vfr_sectional.json"><code>styles/airspace_vfr_sectional.json</code></a> — MapLibre VFR Sectional + TAC + 3D Airspace style</li>
-              <li><a href="cycles/current/manifest.json"><code>cycles/current/manifest.json</code></a> (NASR: <strong>${cur_nasr_date}</strong>, Charts: <strong>${cur_chart_date}</strong>, AIRAC <code>${cur_nasr_airac}</code>)</li>
-              <li><a href="cycles/current/airspace.pmtiles"><code>cycles/current/airspace.pmtiles</code></a></li>
-            </ul>
-          </body>
-          </html>
-          EOF
-
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - name: Upload Pages artifact
+        if: steps.publish.outputs.deploy == 'true'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: _site
+
+  deploy:
+    name: Deploy Pages
+    needs: publish
+    if: needs.publish.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  # Reported separately so a verified NASR edition still deploys when another effective product
+  # is missing, while the run as a whole turns red.
+  verdict:
+    name: Effective editions published
+    needs: publish
+    if: needs.publish.outputs.required_failed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::error::An effective edition is missing; see the publish job log."
+          exit 1
