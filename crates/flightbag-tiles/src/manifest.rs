@@ -8,6 +8,7 @@ use flightbag_nasr::PublishedCifpManifest;
 use flightbag_nasr::charts::{HarvestedRasterPyramid, RasterChartSeries, ResolvedChartCycle};
 
 use crate::archive::{ArchiveError, RasterArchiveParams, write_raster_pmtiles_archive};
+use crate::ipfs::{ArtifactStorage, IpfsOptions, IpfsPublication, annotate_entries};
 use crate::{PROTOTYPE_DISCLAIMER, PublishedArtifactRecord, PublishedCycleManifest};
 
 /// Canonical MapLibre VFR Sectional + TAC + 3D Airspace style JSON.
@@ -73,10 +74,14 @@ pub struct PublishedChartManifest {
 /// pre-stage upcoming editions before cutover and verify every download with SHA-256.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RollingManifest {
-    /// Manifest schema version (`1`).
+    /// Manifest schema version (`2`).
     pub schema_version: u32,
     /// Mandatory safety disclaimer marking all entries as non-navigational.
     pub disclaimer: String,
+    /// Import parameters and cycle directories behind the entries' `ipfs_cid`, or `None` when
+    /// no listed artifact has a recorded CID.
+    #[serde(default)]
+    pub ipfs: Option<IpfsPublication>,
     /// Published artifact entries sorted deterministically by `(authority, effective_from_utc)`.
     pub entries: Vec<RollingEntry>,
 }
@@ -98,8 +103,18 @@ pub struct RollingEntry {
     pub effective_until_utc: String,
     /// Artifact filename (`"airspace.pmtiles"`, `"vfr_sectional.pmtiles"`, etc.).
     pub file: String,
-    /// Resolved HTTPS or relative URL for downloading the `.pmtiles` archive.
+    /// Primary download location: the Release asset, or for an artifact stored on IPFS only
+    /// its verified gateway URL (`ipfs://<directory CID>/<file>` while no gateway is verified).
     pub url: String,
+    /// Where the artifact bytes are published.
+    #[serde(default)]
+    pub storage: ArtifactStorage,
+    /// CIDv1 of the artifact under the manifest's `ipfs.import` parameters.
+    #[serde(default)]
+    pub ipfs_cid: Option<String>,
+    /// Further verified locations of the same bytes (HTTP `Range` and CORS).
+    #[serde(default)]
+    pub mirror_urls: Vec<String>,
     /// Exact byte length of the `.pmtiles` archive.
     pub size_bytes: u64,
     /// Lowercase 64-character SHA-256 hex digest of the `.pmtiles` archive.
@@ -313,7 +328,8 @@ fn remove_style_source_and_layer(doc: &mut serde_json::Value, source_id: &str, l
 
 /// Scans cycle subdirectories under `cycles_dir` (`YYYY-MM-DD/manifest.json` and
 /// `YYYY-MM-DD/chart_*.json`), expands `url_template` (`{date}` and `{file}` placeholders),
-/// and writes a deterministic rolling [`RollingManifest`] to `out_path`.
+/// records CIDs and gateway locations from the cycles' IPFS companions as `ipfs` directs, and
+/// writes a deterministic rolling [`RollingManifest`] to `out_path`.
 ///
 /// # Errors
 ///
@@ -321,6 +337,7 @@ fn remove_style_source_and_layer(doc: &mut serde_json::Value, source_id: &str, l
 pub fn build_rolling_manifest(
     cycles_dir: &Path,
     url_template: &str,
+    ipfs: &IpfsOptions,
     out_path: &Path,
 ) -> Result<RollingManifest, ArchiveError> {
     let mut entries = Vec::new();
@@ -377,6 +394,9 @@ pub fn build_rolling_manifest(
                 min_zoom: nasr.airspace_pmtiles.min_zoom,
                 max_zoom: nasr.airspace_pmtiles.max_zoom,
                 bounds: nasr.airspace_pmtiles.bounds,
+                storage: ArtifactStorage::Release,
+                ipfs_cid: None,
+                mirror_urls: Vec::new(),
             });
         }
 
@@ -405,6 +425,9 @@ pub fn build_rolling_manifest(
                 min_zoom: 0,
                 max_zoom: 16,
                 bounds: cifp.cifp_binary.bounds,
+                storage: ArtifactStorage::Release,
+                ipfs_cid: None,
+                mirror_urls: Vec::new(),
             });
         }
 
@@ -456,6 +479,9 @@ pub fn build_rolling_manifest(
                 min_zoom: chart.chart_pmtiles.min_zoom,
                 max_zoom: chart.chart_pmtiles.max_zoom,
                 bounds: chart.chart_pmtiles.bounds,
+                storage: ArtifactStorage::Release,
+                ipfs_cid: None,
+                mirror_urls: Vec::new(),
             });
         }
     }
@@ -466,9 +492,11 @@ pub fn build_rolling_manifest(
             .then_with(|| a.effective_from_utc.cmp(&b.effective_from_utc))
     });
 
+    let ipfs = annotate_entries(&mut entries, cycles_dir, ipfs)?;
     let manifest = RollingManifest {
-        schema_version: 1,
+        schema_version: 2,
         disclaimer: PROTOTYPE_DISCLAIMER.to_owned(),
+        ipfs,
         entries,
     };
 
@@ -588,6 +616,7 @@ mod tests {
         let rolling_res = build_rolling_manifest(
             &root,
             "https://github.com/luofang34/Flightbag/releases/download/airac-{date}/{file}",
+            &IpfsOptions::default(),
             &rolling_path,
         );
         assert!(rolling_res.is_ok());

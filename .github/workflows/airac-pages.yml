@@ -52,10 +52,22 @@ jobs:
       - name: Build flightbag CLI (release)
         run: cargo build --locked --release -p flightbag-cli
 
+      # A pinning service stores CIDs it fetches from a peer; with no node configured the
+      # publisher starts this one for the duration of the run.
+      - name: Install Kubo for the pinning service
+        if: vars.IPFS_PIN_SERVICE_URL != '' && vars.IPFS_KUBO_RPC_URL == ''
+        run: ./scripts/install-kubo.sh "$RUNNER_TEMP/kubo" >>"$GITHUB_PATH"
+
       - name: Publish editions and stage the Pages site
         id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # All optional: without a node or a pinning service the run records CIDs and pins nothing.
+          IPFS_KUBO_RPC_URL: ${{ vars.IPFS_KUBO_RPC_URL }}
+          IPFS_KUBO_RPC_TOKEN: ${{ secrets.IPFS_KUBO_RPC_TOKEN }}
+          IPFS_PIN_SERVICE_URL: ${{ vars.IPFS_PIN_SERVICE_URL }}
+          IPFS_PIN_SERVICE_TOKEN: ${{ secrets.IPFS_PIN_SERVICE_TOKEN }}
+          IPFS_GATEWAY_URL: ${{ vars.IPFS_GATEWAY_URL }}
           FORCE_REBUILD: ${{ inputs.force_rebuild == true && 'true' || 'false' }}
           # A manual run always redeploys, which also publishes style or page changes.
           FORCE_DEPLOY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}

@@ -3,6 +3,7 @@
 //! rolling SHA-256 manifests.
 
 mod index;
+mod ipfs;
 
 use std::fs;
 use std::io::Read;
@@ -23,8 +24,8 @@ use flightbag_nasr::fetch::{
 };
 use flightbag_nasr::{GeoBbox, NasrAirspaceCounts, compile_nasr_airspace_zip};
 use flightbag_tiles::{
-    RollingManifest, build_airspace_pmtiles, build_raster_chart_pmtiles, build_rolling_manifest,
-    select_active_entry, write_chart_manifest, write_cycle_manifest,
+    IpfsOptions, RollingManifest, build_airspace_pmtiles, build_raster_chart_pmtiles,
+    build_rolling_manifest, select_active_entry, write_chart_manifest, write_cycle_manifest,
     write_local_vfr_sectional_style, write_local_vfr_style,
 };
 use sha2::{Digest, Sha256};
@@ -41,7 +42,9 @@ Usage:
   flightbag build-nasr --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]
   flightbag build-cifp --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]
   flightbag build-charts --out-dir <DIR> [--series <vfr-all|vfr-sectional|vfr-terminal|ifr-low|ifr-high|all>] [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--max-zoom <Z>] [--threads <N>]
-  flightbag manifest --cycles-dir <DIR> --url-template <TEMPLATE> --out <FILE>
+  flightbag manifest --cycles-dir <DIR> --url-template <TEMPLATE> --out <FILE> [--ipfs-gateway <URL>] [--ipfs-only <FILE>]...
+  flightbag ipfs-cid [--write] <FILE>...
+  flightbag ipfs-dir --cycle-dir <DIR> [--block-out <FILE>]
   flightbag index --manifest <FILE> --out <FILE> [--now <YYYY-MM-DDTHH:MM:SSZ>] [--site-max-bytes <N>]
   flightbag sync --manifest <URL_OR_FILE> --store-dir <DIR> [--authority <SLUG>]
 ";
@@ -53,6 +56,8 @@ enum Command {
         now: Option<String>,
     },
     Index(index::IndexArgs),
+    IpfsCid(ipfs::IpfsCidArgs),
+    IpfsDir(ipfs::IpfsDirArgs),
     ProbeNasr {
         cycle: String,
     },
@@ -91,6 +96,7 @@ enum Command {
     Manifest {
         cycles_dir: PathBuf,
         url_template: String,
+        ipfs: IpfsOptions,
         out_path: PathBuf,
     },
     Sync {
@@ -122,6 +128,8 @@ enum CliError {
     Sync(String),
     #[error("JSON output failed: {0}")]
     Json(String),
+    #[error("content identifier failed: {0}")]
+    Ipfs(String),
 }
 
 fn main() -> ExitCode {
@@ -143,6 +151,8 @@ fn run() -> Result<(), CliError> {
         }
         Command::Plan { now } => run_plan(now.as_deref()),
         Command::Index(args) => index::run_index(&args, now_utc()),
+        Command::IpfsCid(args) => ipfs::run_ipfs_cid(&args),
+        Command::IpfsDir(args) => ipfs::run_ipfs_dir(&args),
         Command::ProbeNasr { cycle } => run_probe_nasr(&cycle),
         Command::ProbeCifp { cycle } => run_probe_cifp(&cycle),
         Command::ProbeCharts { cycle, series } => run_probe_charts(&cycle, &series),
@@ -196,9 +206,10 @@ fn run() -> Result<(), CliError> {
         Command::Manifest {
             cycles_dir,
             url_template,
+            ipfs,
             out_path,
         } => {
-            let manifest = build_rolling_manifest(&cycles_dir, &url_template, &out_path)?;
+            let manifest = build_rolling_manifest(&cycles_dir, &url_template, &ipfs, &out_path)?;
             let text = serde_json::to_string_pretty(&manifest)
                 .map_err(|e| CliError::Json(e.to_string()))?;
             println!("{text}");
@@ -556,6 +567,14 @@ fn run_sync(
         let Some(entry) = select_active_entry(&rolling, auth, &now_iso) else {
             continue;
         };
+        let Some(location) = ipfs::sync_location(entry) else {
+            synced.push(serde_json::json!({
+                "authority": entry.authority,
+                "effective_date": entry.effective_date,
+                "skipped": "no HTTP location is published for this edition",
+            }));
+            continue;
+        };
         let dest = store_dir.join(&entry.effective_date).join(&entry.file);
         if dest.is_file()
             && let Ok(existing) = fs::read(&dest)
@@ -571,10 +590,10 @@ fn run_sync(
             continue;
         }
 
-        let payload = if entry.url.starts_with("http://") || entry.url.starts_with("https://") {
-            fetch_bytes(&transport, &entry.url)?
+        let payload = if location.starts_with("http://") || location.starts_with("https://") {
+            fetch_bytes(&transport, location)?
         } else {
-            fs::read(&entry.url).map_err(|e| CliError::Sync(format!("{}: {e}", entry.url)))?
+            fs::read(location).map_err(|e| CliError::Sync(format!("{location}: {e}")))?
         };
         if payload.len() as u64 != entry.size_bytes {
             return Err(CliError::Sync(format!(
@@ -674,6 +693,8 @@ fn parse_args(args: &[String]) -> Result<Command, CliError> {
         "-h" | "--help" | "help" => Ok(Command::Help),
         "plan" => parse_plan(args),
         "index" => index::parse_index_cmd(args),
+        "ipfs-cid" => ipfs::parse_ipfs_cid(args),
+        "ipfs-dir" => ipfs::parse_ipfs_dir(args),
         "probe-nasr" => parse_probe_nasr(args),
         "probe-cifp" => parse_probe_cifp(args),
         "probe-charts" => parse_probe_charts(args),
@@ -1010,10 +1031,25 @@ fn parse_manifest_cmd(args: &[String]) -> Result<Command, CliError> {
     let mut cycles_dir: Option<PathBuf> = None;
     let mut url_template: Option<String> = None;
     let mut out_path: Option<PathBuf> = None;
+    let mut ipfs = IpfsOptions::default();
     let mut idx = 1_usize;
     while let Some(flag) = args.get(idx).map(String::as_str) {
         match flag {
             "-h" | "--help" => return Ok(Command::Help),
+            "--ipfs-gateway" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --ipfs-gateway".into()))?;
+                ipfs.gateway = Some(val.clone());
+                idx += 2;
+            }
+            "--ipfs-only" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --ipfs-only".into()))?;
+                ipfs.ipfs_only_files.push(val.clone());
+                idx += 2;
+            }
             "--cycles-dir" => {
                 let val = args
                     .get(idx + 1)
@@ -1047,6 +1083,7 @@ fn parse_manifest_cmd(args: &[String]) -> Result<Command, CliError> {
             .ok_or_else(|| CliError::Usage("--cycles-dir <DIR> is required".into()))?,
         url_template: url_template
             .ok_or_else(|| CliError::Usage("--url-template <TEMPLATE> is required".into()))?,
+        ipfs,
         out_path: out_path.ok_or_else(|| CliError::Usage("--out <FILE> is required".into()))?,
     })
 }
@@ -1253,12 +1290,20 @@ mod tests {
             "https://example.com/airac-{date}/{file}".into(),
             "--out".into(),
             "dist/manifest.json".into(),
+            "--ipfs-gateway".into(),
+            "https://gateway.invalid".into(),
+            "--ipfs-only".into(),
+            "vfr_sectional.pmtiles".into(),
         ]);
         assert_eq!(
             manifest_cmd.ok(),
             Some(Command::Manifest {
                 cycles_dir: PathBuf::from("dist/cycles"),
                 url_template: "https://example.com/airac-{date}/{file}".into(),
+                ipfs: IpfsOptions {
+                    gateway: Some("https://gateway.invalid".into()),
+                    ipfs_only_files: vec!["vfr_sectional.pmtiles".into()],
+                },
                 out_path: PathBuf::from("dist/manifest.json"),
             })
         );
