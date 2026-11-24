@@ -18,6 +18,16 @@ pub enum AuthoritySource {
     FaaCifpArinc424,
     /// FAA digital Terminal Procedures Publication (`d-TPP` XML + GeoTIFF plates).
     FaaDtpp,
+    /// FAA 56-day VFR Sectional Aeronautical Chart raster series (`z8..=12` Web Mercator / GeoTIFF).
+    FaaVfrSectional,
+    /// FAA 56-day VFR Terminal Area Chart (`TAC`) raster series (`z10..=12` Web Mercator / GeoTIFF).
+    FaaVfrTerminal,
+    /// FAA 56-day VFR Helicopter Route Chart raster series.
+    FaaVfrHelicopter,
+    /// FAA 56-day IFR Enroute Low Altitude chart raster series.
+    FaaIfrLow,
+    /// FAA 56-day IFR Enroute High Altitude chart raster series.
+    FaaIfrHigh,
     /// OpenStreetMap aeroway/apron/gate/building snapshot (`PBF` digest).
     OpenStreetMap,
     /// Natural Earth coastline / landmask basemap.

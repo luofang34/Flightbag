@@ -1,5 +1,5 @@
 //! Zoom-progressive MVT 2.1 tile pyramid builder (`z2..=10`) with watertight 3D manifold
-//! slicing for multi-shelf controlled and special-use airspaces.
+//! slicing, same-class shared-ceiling dissolution, and ground-contact inner-rim highlighting.
 
 use std::collections::BTreeMap;
 
@@ -7,10 +7,14 @@ use flightbag_core::{
     AirspaceClassification, AirspacePolygon, AirspaceVolume, AltitudeDatum,
     ControlledAirspaceClass, ControlledLocalType, METRES_PER_FOOT, SuaKind,
 };
-use flightbag_nasr::boolean2d::{subtract_polygons, union_polygons};
+use flightbag_nasr::GeoBbox;
+use flightbag_nasr::boolean2d::{
+    close_micro_gaps, polygons_bbox, prune_thin_slivers, subtract_polygons, union_polygons,
+};
 
 use crate::clip::{
-    ProjectedPolygon, TILE_EXTENT, clip_polygons_to_tile, covered_tiles, project_polygon,
+    ProjectedPolygon, TILE_EXTENT, clip_perimeter_lines_to_tile, clip_polygons_to_tile,
+    covered_tiles, project_polygon,
 };
 use crate::mvt::{AttributeValue, EncodedFeature, FeatureGeometry, MvtLayerInput, encode_tile};
 
@@ -23,6 +27,14 @@ pub const MAX_ZOOM: u8 = 10;
 /// Base of Class A airspace (`18,000 ft MSL`), used as the VFR sectional display cap for
 /// stratospheric Special Use Airspaces (`FL180+`) while preserving legal `upper_ft`/`upper_m`.
 const VFR_SUA_DISPLAY_CAP_FT: i32 = 18_000;
+
+/// Morphological gap-closing radius (`~40 m`) welding NASR sector digitization micro-gaps (`0.1–35 m`)
+/// between abutting same-class shelves so shared ceilings (`ttop`) have zero internal walls or seams.
+const SECTOR_GAP_CLOSE_DEG: f64 = 3.6e-4;
+
+/// Mercator `[0, 1]^2` distance tolerance (`~60 m`) matching stepped Class D/E roof edges to their
+/// outer lateral perimeter while suppressing internal Class B/C step-cut chords.
+const PERIMETER_FILTER_TOL_MERC: f64 = 2.5e-6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ManifoldPart {
@@ -59,6 +71,7 @@ struct PreparedPrimitive<'a> {
     upper_datum: &'static str,
     display_upper_datum: &'static str,
     projected: Vec<ProjectedPolygon>,
+    outer_perimeter_filter: Option<Vec<ProjectedPolygon>>,
     min_mx: f64,
     min_my: f64,
     max_mx: f64,
@@ -94,7 +107,17 @@ pub fn build_mvt_pyramid(volumes: &[AirspaceVolume]) -> BTreeMap<(u8, u32, u32),
             let Some(prim) = primitives.get(p_idx) else {
                 continue;
             };
-            let (tile_polys, tile_lines) = clip_polygons_to_tile(&prim.projected, zoom, tx, ty);
+            let (tile_polys, mut tile_lines) = clip_polygons_to_tile(&prim.projected, zoom, tx, ty);
+            if let Some(ref outer_filter) = prim.outer_perimeter_filter {
+                tile_lines = clip_perimeter_lines_to_tile(
+                    &prim.projected,
+                    outer_filter,
+                    PERIMETER_FILTER_TOL_MERC,
+                    zoom,
+                    tx,
+                    ty,
+                );
+            }
             if tile_polys.is_empty() && tile_lines.is_empty() {
                 continue;
             }
@@ -107,62 +130,7 @@ pub fn build_mvt_pyramid(volumes: &[AirspaceVolume]) -> BTreeMap<(u8, u32, u32),
                 });
             }
             if !tile_lines.is_empty() {
-                match prim.part {
-                    ManifoldPart::Walls {
-                        emit_surface_rim: false,
-                    } => {}
-                    ManifoldPart::Walls {
-                        emit_surface_rim: true,
-                    }
-                    | ManifoldPart::Floor => {
-                        line_features.push(EncodedFeature {
-                            id: prim.id,
-                            attributes: with_rim_attributes(
-                                &base_attrs,
-                                "floor",
-                                prim.lower_m,
-                                prim.lower_datum,
-                            ),
-                            geometry: FeatureGeometry::Lines(tile_lines),
-                        });
-                    }
-                    ManifoldPart::Roof => {
-                        line_features.push(EncodedFeature {
-                            id: prim.id,
-                            attributes: with_rim_attributes(
-                                &base_attrs,
-                                "ceiling",
-                                prim.display_upper_m,
-                                prim.display_upper_datum,
-                            ),
-                            geometry: FeatureGeometry::Lines(tile_lines),
-                        });
-                    }
-                    ManifoldPart::Full => {
-                        if prim.lower_ft > 0 && !prim.is_enroute_blanket {
-                            line_features.push(EncodedFeature {
-                                id: prim.id.saturating_mul(2),
-                                attributes: with_rim_attributes(
-                                    &base_attrs,
-                                    "floor",
-                                    prim.lower_m,
-                                    prim.lower_datum,
-                                ),
-                                geometry: FeatureGeometry::Lines(tile_lines.clone()),
-                            });
-                        }
-                        line_features.push(EncodedFeature {
-                            id: prim.id.saturating_mul(2).saturating_add(1),
-                            attributes: with_rim_attributes(
-                                &base_attrs,
-                                "ceiling",
-                                prim.display_upper_m,
-                                prim.display_upper_datum,
-                            ),
-                            geometry: FeatureGeometry::Lines(tile_lines),
-                        });
-                    }
-                }
+                emit_boundary_features(prim, &base_attrs, tile_lines, &mut line_features);
             }
         }
 
@@ -190,21 +158,90 @@ pub fn build_mvt_pyramid(volumes: &[AirspaceVolume]) -> BTreeMap<(u8, u32, u32),
     encoded_tiles
 }
 
-fn prepare_primitives(volumes: &[AirspaceVolume]) -> Vec<PreparedPrimitive<'_>> {
-    let mut groups: BTreeMap<&str, Vec<&AirspaceVolume>> = BTreeMap::new();
-    for vol in volumes {
-        if zoom_eligibility(vol).is_some() {
-            groups
-                .entry(vol.airspace_key.as_str())
-                .or_default()
-                .push(vol);
+fn emit_boundary_features(
+    prim: &PreparedPrimitive<'_>,
+    base_attrs: &[(String, AttributeValue)],
+    tile_lines: Vec<Vec<(i32, i32)>>,
+    line_features: &mut Vec<EncodedFeature>,
+) {
+    match prim.part {
+        ManifoldPart::Walls {
+            emit_surface_rim: false,
+        } => {}
+        ManifoldPart::Walls {
+            emit_surface_rim: true,
+        } => {
+            line_features.push(EncodedFeature {
+                id: prim.id,
+                attributes: with_rim_attributes(base_attrs, "surface_floor", 0.0, "agl"),
+                geometry: FeatureGeometry::Lines(tile_lines),
+            });
+        }
+        ManifoldPart::Floor => {
+            line_features.push(EncodedFeature {
+                id: prim.id,
+                attributes: with_rim_attributes(
+                    base_attrs,
+                    "floor",
+                    prim.lower_m,
+                    prim.lower_datum,
+                ),
+                geometry: FeatureGeometry::Lines(tile_lines),
+            });
+        }
+        ManifoldPart::Roof => {
+            line_features.push(EncodedFeature {
+                id: prim.id,
+                attributes: with_rim_attributes(
+                    base_attrs,
+                    "ceiling",
+                    prim.display_upper_m,
+                    prim.display_upper_datum,
+                ),
+                geometry: FeatureGeometry::Lines(tile_lines),
+            });
+        }
+        ManifoldPart::Full => {
+            if !prim.is_enroute_blanket {
+                if prim.lower_ft == 0 && is_solid_surface_rim_class(prim.template.classification) {
+                    line_features.push(EncodedFeature {
+                        id: prim.id.saturating_mul(2),
+                        attributes: with_rim_attributes(base_attrs, "surface_floor", 0.0, "agl"),
+                        geometry: FeatureGeometry::Lines(tile_lines.clone()),
+                    });
+                } else if prim.lower_ft > 0 {
+                    line_features.push(EncodedFeature {
+                        id: prim.id.saturating_mul(2),
+                        attributes: with_rim_attributes(
+                            base_attrs,
+                            "floor",
+                            prim.lower_m,
+                            prim.lower_datum,
+                        ),
+                        geometry: FeatureGeometry::Lines(tile_lines.clone()),
+                    });
+                }
+            }
+            line_features.push(EncodedFeature {
+                id: prim.id.saturating_mul(2).saturating_add(1),
+                attributes: with_rim_attributes(
+                    base_attrs,
+                    "ceiling",
+                    prim.display_upper_m,
+                    prim.display_upper_datum,
+                ),
+                geometry: FeatureGeometry::Lines(tile_lines),
+            });
         }
     }
+}
 
+fn prepare_primitives(volumes: &[AirspaceVolume]) -> Vec<PreparedPrimitive<'_>> {
+    let groups = build_manifold_groups(volumes);
     let mut out = Vec::with_capacity(volumes.len());
     let mut next_id: u64 = 1;
 
-    for group in groups.into_values() {
+    for group in groups {
         if can_manifold_slice(&group) {
             slice_manifold_group(&group, &mut next_id, &mut out);
         } else {
@@ -230,6 +267,7 @@ fn prepare_primitives(volumes: &[AirspaceVolume]) -> Vec<PreparedPrimitive<'_>> 
                         lower_datum: vol.lower.datum.renderer_datum(),
                         upper_datum: vol.upper.datum.renderer_datum(),
                         display_upper_datum,
+                        outer_perimeter_filter: None,
                     },
                     &vol.polygons,
                 );
@@ -238,6 +276,109 @@ fn prepare_primitives(volumes: &[AirspaceVolume]) -> Vec<PreparedPrimitive<'_>> 
     }
 
     out
+}
+
+/// Groups eligible volumes for manifold slicing:
+/// - `Class B` and `Class C` volumes group into spatially connected components of the same class
+///   (so touching complexes like Washington Tri-Area `DCA`/`IAD`/`BWI`/`ADW` and multi-sector
+///   complexes like New York Class B or `KSNA` Class C dissolve shared-ceiling boundaries).
+/// - `Class D`, `Class E`, and `SpecialUse` group by `(class_code, airspace_key)`.
+fn build_manifold_groups(volumes: &[AirspaceVolume]) -> Vec<Vec<&AirspaceVolume>> {
+    let mut bc_buckets: BTreeMap<u8, Vec<(&AirspaceVolume, GeoBbox)>> = BTreeMap::new();
+    let mut keyed_groups: BTreeMap<(String, &str), Vec<&AirspaceVolume>> = BTreeMap::new();
+
+    for vol in volumes {
+        if zoom_eligibility(vol).is_none() {
+            continue;
+        }
+        match vol.classification {
+            AirspaceClassification::Controlled {
+                class: ControlledAirspaceClass::ClassB,
+                ..
+            } => {
+                if let Some(bb) = polygons_bbox(&vol.polygons) {
+                    bc_buckets.entry(0).or_default().push((vol, bb));
+                }
+            }
+            AirspaceClassification::Controlled {
+                class: ControlledAirspaceClass::ClassC,
+                ..
+            } => {
+                if let Some(bb) = polygons_bbox(&vol.polygons) {
+                    bc_buckets.entry(1).or_default().push((vol, bb));
+                }
+            }
+            _ => {
+                keyed_groups
+                    .entry((
+                        vol.classification.local_type_tag().to_owned(),
+                        vol.airspace_key.as_str(),
+                    ))
+                    .or_default()
+                    .push(vol);
+            }
+        }
+    }
+
+    let mut groups: Vec<Vec<&AirspaceVolume>> = Vec::new();
+    let pad = SECTOR_GAP_CLOSE_DEG * 2.5;
+    for items in bc_buckets.into_values() {
+        let count = items.len();
+        let mut parent: Vec<usize> = (0..count).collect();
+        for i in 0..count {
+            let Some((_, bb_i)) = items.get(i).copied() else {
+                continue;
+            };
+            let exp_i = GeoBbox {
+                min_lon: bb_i.min_lon - pad,
+                min_lat: bb_i.min_lat - pad,
+                max_lon: bb_i.max_lon + pad,
+                max_lat: bb_i.max_lat + pad,
+            };
+            for j in (i + 1)..count {
+                let Some((_, bb_j)) = items.get(j).copied() else {
+                    continue;
+                };
+                if exp_i.intersects(bb_j) {
+                    uf_union(&mut parent, i, j);
+                }
+            }
+        }
+        let mut comps: BTreeMap<usize, Vec<&AirspaceVolume>> = BTreeMap::new();
+        for (idx, (vol, _)) in items.into_iter().enumerate() {
+            let root = uf_find(&mut parent, idx);
+            comps.entry(root).or_default().push(vol);
+        }
+        groups.extend(comps.into_values());
+    }
+
+    groups.extend(keyed_groups.into_values());
+    groups
+}
+
+fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
+    while let Some(&p) = parent.get(x) {
+        if p == x {
+            break;
+        }
+        if let Some(&gp) = parent.get(p)
+            && let Some(slot) = parent.get_mut(x)
+        {
+            *slot = gp;
+        }
+        x = p;
+    }
+    x
+}
+
+fn uf_union(parent: &mut [usize], a: usize, b: usize) {
+    let ra = uf_find(parent, a);
+    let rb = uf_find(parent, b);
+    if ra != rb
+        && let Some(slot) = parent.get_mut(rb)
+    {
+        *slot = ra;
+    }
 }
 
 struct PrimitiveSpec<'a> {
@@ -254,6 +395,7 @@ struct PrimitiveSpec<'a> {
     lower_datum: &'static str,
     upper_datum: &'static str,
     display_upper_datum: &'static str,
+    outer_perimeter_filter: Option<Vec<ProjectedPolygon>>,
 }
 
 fn push_projected_primitive<'a>(
@@ -292,6 +434,7 @@ fn push_projected_primitive<'a>(
         upper_datum: spec.upper_datum,
         display_upper_datum: spec.display_upper_datum,
         projected: proj,
+        outer_perimeter_filter: spec.outer_perimeter_filter,
         min_mx,
         min_my,
         max_mx,
@@ -301,6 +444,35 @@ fn push_projected_primitive<'a>(
 
 fn is_msl_like(datum: AltitudeDatum) -> bool {
     matches!(datum, AltitudeDatum::Msl | AltitudeDatum::FlightLevel)
+}
+
+fn is_agl_like(datum: AltitudeDatum) -> bool {
+    matches!(datum, AltitudeDatum::Surface | AltitudeDatum::Agl)
+}
+
+fn is_solid_surface_rim_class(classification: AirspaceClassification) -> bool {
+    matches!(
+        classification,
+        AirspaceClassification::Controlled {
+            class: ControlledAirspaceClass::ClassB | ControlledAirspaceClass::ClassC,
+            ..
+        } | AirspaceClassification::SpecialUse(SuaKind::Prohibited | SuaKind::Restricted)
+    )
+}
+
+fn is_dashed_perimeter_class(classification: AirspaceClassification) -> bool {
+    matches!(
+        classification,
+        AirspaceClassification::Controlled {
+            class: ControlledAirspaceClass::ClassD,
+            ..
+        } | AirspaceClassification::Controlled {
+            local_type: ControlledLocalType::ClassE2Surface
+                | ControlledLocalType::ClassE3Extension
+                | ControlledLocalType::ClassE4Extension,
+            ..
+        } | AirspaceClassification::SpecialUse(SuaKind::NationalSecurityArea)
+    )
 }
 
 fn can_manifold_slice(group: &[&AirspaceVolume]) -> bool {
@@ -313,40 +485,57 @@ fn can_manifold_slice(group: &[&AirspaceVolume]) -> bool {
     let Some(first_zoom) = zoom_eligibility(first) else {
         return false;
     };
-    group.iter().all(|vol| {
+    let common_valid = group.iter().all(|vol| {
         let (_, disp_datum, eff_upper_ft) = compute_display_ceiling(vol);
         zoom_eligibility(vol) == Some(first_zoom)
             && disp_datum == "msl"
             && eff_upper_ft > vol.lower.value_ft
-            && (vol.lower.value_ft == 0 || is_msl_like(vol.lower.datum))
-    })
+    });
+    if !common_valid {
+        return false;
+    }
+    let all_msl_or_zero = group
+        .iter()
+        .all(|vol| vol.lower.value_ft == 0 || is_msl_like(vol.lower.datum));
+    let all_agl_floors = group.iter().all(|vol| is_agl_like(vol.lower.datum));
+    all_msl_or_zero || all_agl_floors
 }
 
 /// Slices a multi-shelf complex (`Class B`, `Class C`, stepped `Class D`, or multi-slab `SUA`)
 /// across all unique altitude planes `z_0 < z_1 < ... < z_m` into watertight exterior walls,
-/// exposed underside terraces (`part = "floor"`), and exposed top ceilings (`part = "roof"`).
+/// exposed underside terraces (`part = "floor"`), and unified top ceilings (`part = "roof"`).
 fn slice_manifold_group<'a>(
     group: &[&'a AirspaceVolume],
     next_id: &mut u64,
     out: &mut Vec<PreparedPrimitive<'a>>,
 ) {
-    let Some(&rep) = group.first() else {
+    let rep = group
+        .iter()
+        .copied()
+        .find(|v| v.lower.value_ft == 0)
+        .or_else(|| group.first().copied());
+    let Some(rep) = rep else {
         return;
     };
     let Some((min_zoom, is_enroute_blanket)) = zoom_eligibility(rep) else {
         return;
     };
 
-    let zero_is_sfc = group.iter().any(|v| {
-        v.lower.value_ft == 0
-            && matches!(v.lower.datum, AltitudeDatum::Surface | AltitudeDatum::Agl)
-    });
+    let all_agl_floors = group.iter().all(|v| is_agl_like(v.lower.datum))
+        && group
+            .iter()
+            .any(|v| v.lower.value_ft > 0 && v.lower.datum == AltitudeDatum::Agl);
+    let zero_is_sfc = group
+        .iter()
+        .any(|v| v.lower.value_ft == 0 && is_agl_like(v.lower.datum));
     let max_legal_upper_ft = group
         .iter()
         .map(|v| v.upper.value_ft)
         .max()
         .unwrap_or(rep.upper.value_ft);
-    let is_wedding_cake_class = matches!(
+    let emit_solid_sfc = is_solid_surface_rim_class(rep.classification);
+    let filter_dashed_roof_seams = is_dashed_perimeter_class(rep.classification);
+    let close_sector_gaps = matches!(
         rep.classification,
         AirspaceClassification::Controlled {
             class: ControlledAirspaceClass::ClassB | ControlledAirspaceClass::ClassC,
@@ -368,6 +557,7 @@ fn slice_manifold_group<'a>(
 
     let slab_count = z_planes.len().saturating_sub(1);
     let mut unions: Vec<Vec<AirspacePolygon>> = Vec::with_capacity(slab_count);
+    let mut full_outer_union: Vec<AirspacePolygon> = Vec::new();
     for window in z_planes.windows(2) {
         let (Some(&z_low), Some(&z_high)) = (window.first(), window.get(1)) else {
             continue;
@@ -379,8 +569,28 @@ fn slice_manifold_group<'a>(
                 slab_union = union_polygons(&slab_union, &vol.polygons);
             }
         }
-        unions.push(slab_union);
+        let closed_slab = if close_sector_gaps {
+            close_micro_gaps(&slab_union, SECTOR_GAP_CLOSE_DEG)
+        } else {
+            slab_union
+        };
+        if filter_dashed_roof_seams {
+            full_outer_union = union_polygons(&full_outer_union, &closed_slab);
+        }
+        unions.push(closed_slab);
     }
+
+    let outer_proj: Option<Vec<ProjectedPolygon>> = if filter_dashed_roof_seams && unions.len() > 1
+    {
+        Some(
+            full_outer_union
+                .iter()
+                .filter_map(project_polygon)
+                .collect(),
+        )
+    } else {
+        None
+    };
 
     let empty_polys: Vec<AirspacePolygon> = Vec::new();
     for slab_idx in 0..unions.len() {
@@ -395,7 +605,7 @@ fn slice_manifold_group<'a>(
             continue;
         }
 
-        let lower_datum = if z_low == 0 && zero_is_sfc {
+        let lower_datum = if all_agl_floors || (z_low == 0 && zero_is_sfc) {
             "agl"
         } else {
             "msl"
@@ -412,7 +622,7 @@ fn slice_manifold_group<'a>(
         };
         let legal_upper_m = f64::from(legal_upper_ft) * METRES_PER_FOOT;
 
-        // 1. Exterior vertical walls across [z_low, z_high] (plus ground rim for SFC Class B/C core).
+        // 1. Exterior vertical walls across [z_low, z_high] (plus ground-contact rim for SFC core).
         push_projected_primitive(
             out,
             next_id,
@@ -422,7 +632,7 @@ fn slice_manifold_group<'a>(
                 min_zoom,
                 is_enroute_blanket,
                 part: ManifoldPart::Walls {
-                    emit_surface_rim: z_low == 0 && is_wedding_cake_class,
+                    emit_surface_rim: z_low == 0 && emit_solid_sfc,
                 },
                 lower_ft: z_low,
                 upper_ft: legal_upper_ft,
@@ -432,17 +642,27 @@ fn slice_manifold_group<'a>(
                 lower_datum,
                 upper_datum: "msl",
                 display_upper_datum: "msl",
+                outer_perimeter_filter: None,
             },
             u_cur,
         );
 
-        // 2. Exposed floating underside terrace at z_low (`U_cur \ U_prev`).
+        // 2. Exposed floating underside terrace at z_low (`U_cur \ U_prev`), pruned of micro-slivers.
         if z_low > 0 {
             let u_prev = slab_idx
                 .checked_sub(1)
                 .and_then(|prev| unions.get(prev))
                 .unwrap_or(&empty_polys);
-            let floor_terrace = subtract_polygons(u_cur, u_prev);
+            let floor_terrace = if u_prev.is_empty() {
+                u_cur.clone()
+            } else {
+                let diff = subtract_polygons(u_cur, u_prev);
+                if close_sector_gaps {
+                    prune_thin_slivers(&diff, SECTOR_GAP_CLOSE_DEG)
+                } else {
+                    diff
+                }
+            };
             if !floor_terrace.is_empty() {
                 push_projected_primitive(
                     out,
@@ -458,18 +678,28 @@ fn slice_manifold_group<'a>(
                         lower_m,
                         upper_m: legal_upper_m,
                         display_upper_m,
-                        lower_datum: "msl",
+                        lower_datum,
                         upper_datum: "msl",
                         display_upper_datum: "msl",
+                        outer_perimeter_filter: None,
                     },
                     &floor_terrace,
                 );
             }
         }
 
-        // 3. Exposed top ceiling at z_high (`U_cur \ U_next`).
+        // 3. Exposed top ceiling at z_high (`U_cur \ U_next`), pruned of micro-slivers.
         let u_next = unions.get(slab_idx + 1).unwrap_or(&empty_polys);
-        let roof_cap = subtract_polygons(u_cur, u_next);
+        let roof_cap = if u_next.is_empty() {
+            u_cur.clone()
+        } else {
+            let diff = subtract_polygons(u_cur, u_next);
+            if close_sector_gaps {
+                prune_thin_slivers(&diff, SECTOR_GAP_CLOSE_DEG)
+            } else {
+                diff
+            }
+        };
         if !roof_cap.is_empty() {
             push_projected_primitive(
                 out,
@@ -488,6 +718,7 @@ fn slice_manifold_group<'a>(
                     lower_datum,
                     upper_datum: "msl",
                     display_upper_datum: "msl",
+                    outer_perimeter_filter: outer_proj.clone(),
                 },
                 &roof_cap,
             );
@@ -508,7 +739,7 @@ fn zoom_eligibility(vol: &AirspaceVolume) -> Option<(u8, bool)> {
                 | ControlledLocalType::ClassE3Extension
                 | ControlledLocalType::ClassE4Extension => Some((6, false)),
                 ControlledLocalType::ClassE5Transition => {
-                    if vol.lower.value_ft < 1_200 {
+                    if vol.lower.value_ft < 1_200 && is_agl_like(vol.lower.datum) {
                         Some((7, false))
                     } else if approx_footprint_deg2(vol) <= 4.0 {
                         Some((7, true))
@@ -550,17 +781,13 @@ fn approx_footprint_deg2(vol: &AirspaceVolume) -> f64 {
 }
 
 /// Computes `(display_upper_m, display_upper_datum, effective_upper_ft)` for VFR 3D portrayal while
-/// preserving legal `upper_m` / `upper_ft` attributes on every feature:
-/// - `700 ft AGL` `CLASS_E5` transition rings render as the `700..1,200 ft AGL` transition step.
-/// - `0 SFC` `CLASS_E2`/`E3`/`E4` with `18,000 ft MSL` (`-9998` / `AA`) render to `700 ft AGL`.
-/// - Stratospheric `SpecialUse` (`> 18,000 ft MSL`, e.g. `FL800` offshore Warning Areas) cap VFR
-///   display height at `18,000 ft MSL` (`FL180`, base of Class A).
+/// preserving legal `upper_m` / `upper_ft` attributes on every feature.
 fn compute_display_ceiling(vol: &AirspaceVolume) -> (f64, &'static str, i32) {
     match vol.classification {
         AirspaceClassification::Controlled {
             local_type: ControlledLocalType::ClassE5Transition,
             ..
-        } if matches!(vol.lower.datum, AltitudeDatum::Agl | AltitudeDatum::Surface)
+        } if is_agl_like(vol.lower.datum)
             && vol.lower.value_ft > 0
             && vol.lower.value_ft < 1_200 =>
         {
@@ -719,54 +946,108 @@ mod tests {
     }
 
     #[test]
-    fn slices_class_b_wedding_cake_into_single_roof_and_stepped_floor_terrace() {
+    fn slices_class_b_wedding_cake_and_dissolves_micro_gap_same_ceiling_sectors() {
+        // Inner core 0..7000 + two adjacent shelves 1500..7000 and 3000..7000 separated by a 16 m crack!
         let core = AirspaceVolume {
-            airspace_key: "B:SEA_B".into(),
-            ident: "SEA".into(),
-            name: "SEATTLE CLASS B".into(),
+            airspace_key: "JFK B".into(),
+            ident: "JFK".into(),
+            name: "NEW YORK CLASS B".into(),
             sector: Some("AREA A".into()),
             classification: AirspaceClassification::Controlled {
                 class: ControlledAirspaceClass::ClassB,
                 local_type: ControlledLocalType::ClassB,
             },
             lower: VerticalLimit::SURFACE,
-            upper: VerticalLimit::msl_ft(10_000),
+            upper: VerticalLimit::msl_ft(7_000),
             hours_of_use: None,
             controlling_agency: None,
-            polygons: rect_poly(-122.4, 47.4, -122.3, 47.5),
+            polygons: rect_poly(-74.05, 40.60, -73.95, 40.70),
         };
-        let shelf = AirspaceVolume {
-            sector: Some("AREA H".into()),
-            lower: VerticalLimit::msl_ft(3_000),
-            polygons: subtract_polygons(&rect_poly(-122.5, 47.3, -122.2, 47.6), &core.polygons),
+        let shelf_15 = AirspaceVolume {
+            sector: Some("AREA E".into()),
+            lower: VerticalLimit::msl_ft(1_500),
+            polygons: subtract_polygons(&rect_poly(-74.15, 40.55, -73.95, 40.75), &core.polygons),
             ..core.clone()
         };
-        let vols = vec![core, shelf];
+        // Separated by 1.5e-4 deg (~15 m) micro-gap from shelf_15, sharing ceiling 7000 ft!
+        let shelf_30 = AirspaceVolume {
+            sector: Some("AREA H".into()),
+            lower: VerticalLimit::msl_ft(3_000),
+            polygons: rect_poly(-73.949_85, 40.55, -73.85, 40.75),
+            ..core.clone()
+        };
+
+        let vols = vec![core, shelf_15, shelf_30];
         let prims = prepare_primitives(&vols);
 
         let roofs: Vec<_> = prims
             .iter()
             .filter(|p| p.part == ManifoldPart::Roof)
             .collect();
-        let floors: Vec<_> = prims
-            .iter()
-            .filter(|p| p.part == ManifoldPart::Floor)
-            .collect();
-        let walls: Vec<_> = prims
-            .iter()
-            .filter(|p| matches!(p.part, ManifoldPart::Walls { .. }))
-            .collect();
-
-        // Exactly 1 merged 10,000 ft roof with NO interior holes, 1 stepped 3,000 ft donut floor
-        // terrace WITH an interior hole, and 2 wall bands ([0..3000] core, [3000..10000] outer).
+        // All 3 sectors share ttop = 7000 ft -> must dissolve into ONE single hole-free roof!
         assert_eq!(roofs.len(), 1);
         assert!(roofs.first().is_some_and(|r| {
-            r.upper_ft == 10_000 && r.projected.iter().all(|poly| poly.interiors.is_empty())
+            r.upper_ft == 7_000
+                && r.projected.len() == 1
+                && r.projected.iter().all(|poly| poly.interiors.is_empty())
         }));
-        assert_eq!(floors.len(), 1);
-        assert!(floors.first().is_some_and(|f| {
-            f.lower_ft == 3_000 && f.projected.iter().any(|poly| !poly.interiors.is_empty())
+
+        // Stepped floors at 1500 ft and 3000 ft must both remain distinct!
+        let floors: Vec<i32> = prims
+            .iter()
+            .filter(|p| p.part == ManifoldPart::Floor)
+            .map(|p| p.lower_ft)
+            .collect();
+        assert_eq!(floors, vec![1_500, 3_000]);
+
+        // Inner SFC core must emit `emit_surface_rim: true` on the [0, 1500] wall band only.
+        let sfc_walls: Vec<_> = prims
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.part,
+                    ManifoldPart::Walls {
+                        emit_surface_rim: true
+                    }
+                )
+            })
+            .collect();
+        assert_eq!(sfc_walls.len(), 1);
+        assert!(sfc_walls.first().is_some_and(|w| w.lower_ft == 0));
+    }
+
+    #[test]
+    fn slices_agl_floored_moa_with_airstrip_cutouts_into_single_hole_free_roof() {
+        let cutout_circle = rect_poly(-118.10, 35.40, -118.02, 35.48);
+        let moa_outer = AirspaceVolume {
+            airspace_key: "ISABELLA MOA".into(),
+            ident: "ISABELLA MOA".into(),
+            name: "ISABELLA MOA, CA".into(),
+            sector: Some("PART 1".into()),
+            classification: AirspaceClassification::SpecialUse(SuaKind::Moa),
+            lower: VerticalLimit::agl_ft(200),
+            upper: VerticalLimit::msl_ft(18_000),
+            hours_of_use: None,
+            controlling_agency: None,
+            polygons: subtract_polygons(&rect_poly(-118.40, 35.20, -117.80, 35.70), &cutout_circle),
+        };
+        let moa_above_strip = AirspaceVolume {
+            sector: Some("PART 2".into()),
+            lower: VerticalLimit::agl_ft(1_500),
+            polygons: cutout_circle,
+            ..moa_outer.clone()
+        };
+
+        let vols = [moa_outer, moa_above_strip];
+        let prims = prepare_primitives(&vols);
+        let roofs: Vec<_> = prims
+            .iter()
+            .filter(|p| p.part == ManifoldPart::Roof)
+            .collect();
+        // Single seamless 18,000 ft roof with zero interior 3 NM cylinder rings!
+        assert_eq!(roofs.len(), 1);
+        assert!(roofs.first().is_some_and(|r| {
+            r.projected.len() == 1 && r.projected.iter().all(|p| p.interiors.is_empty())
         }));
-        assert_eq!(walls.len(), 2);
     }
 }

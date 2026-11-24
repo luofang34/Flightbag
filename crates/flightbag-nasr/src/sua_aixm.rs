@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read, Seek};
 
 use flightbag_core::{
-    AirspaceClassification, AirspacePolygon, AirspaceVolume, SuaKind, VerticalLimit,
+    AirspaceClassification, AirspacePolygon, AirspaceVolume, AltitudeDatum, SuaKind, VerticalLimit,
 };
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
@@ -353,10 +353,17 @@ fn parse_sua_xml(
 
     let mut by_id: BTreeMap<String, Vec<AirspacePolygon>> = BTreeMap::new();
     for a in &airspaces {
+        let mut sorted_comps = a.components.clone();
+        sorted_comps.sort_by_key(|c| c.seq);
         let mut merged = Vec::new();
-        for c in &a.components {
-            if matches!(c.op, GeomOp::Base | GeomOp::Union) {
-                merged = union_polygons(&merged, &c.polygons);
+        for c in &sorted_comps {
+            match c.op {
+                GeomOp::Base | GeomOp::Union => {
+                    merged = union_polygons(&merged, &c.polygons);
+                }
+                GeomOp::Subtr => {
+                    merged = subtract_polygons(&merged, &c.polygons);
+                }
             }
         }
         if !a.gml_id.is_empty() {
@@ -629,6 +636,20 @@ fn handle_text(
     }
 }
 
+fn is_msl_like_datum(datum: AltitudeDatum) -> bool {
+    matches!(datum, AltitudeDatum::Msl | AltitudeDatum::FlightLevel)
+}
+
+fn is_agl_like_datum(datum: AltitudeDatum) -> bool {
+    matches!(datum, AltitudeDatum::Surface | AltitudeDatum::Agl)
+}
+
+fn compatible_datums(a: AltitudeDatum, b: AltitudeDatum) -> bool {
+    a == b
+        || (is_msl_like_datum(a) && is_msl_like_datum(b))
+        || (is_agl_like_datum(a) && is_agl_like_datum(b))
+}
+
 fn apply_3d_subtraction(slabs: Vec<Slab3d>, sub: &RawVolumeComponent) -> Vec<Slab3d> {
     let sub_low = sub.lower.value_ft;
     let sub_high = sub.upper.value_ft;
@@ -637,7 +658,12 @@ fn apply_3d_subtraction(slabs: Vec<Slab3d>, sub: &RawVolumeComponent) -> Vec<Sla
     for slab in slabs {
         let s_low = slab.lower.value_ft;
         let s_high = slab.upper.value_ft;
-        if sub_high <= s_low || sub_low >= s_high {
+        let sub_strictly_below = (compatible_datums(sub.upper.datum, slab.lower.datum)
+            && sub_high <= s_low)
+            || (sub_high == 0 && is_agl_like_datum(sub.upper.datum));
+        let sub_strictly_above =
+            compatible_datums(sub.lower.datum, slab.upper.datum) && sub_low >= s_high;
+        if sub_strictly_below || sub_strictly_above {
             next_slabs.push(slab);
             continue;
         }
@@ -654,14 +680,23 @@ fn apply_3d_subtraction(slabs: Vec<Slab3d>, sub: &RawVolumeComponent) -> Vec<Sla
                 upper: slab.upper,
             });
         }
-        if sub_low > s_low {
+        let has_below_remainder = (compatible_datums(slab.lower.datum, sub.lower.datum)
+            && sub_low > s_low)
+            || (s_low == 0 && is_agl_like_datum(slab.lower.datum) && sub_low > 0);
+        if has_below_remainder {
             next_slabs.push(Slab3d {
                 polygons: overlap.clone(),
                 lower: slab.lower,
                 upper: sub.lower,
             });
         }
-        if sub_high < s_high {
+        let has_above_remainder = (compatible_datums(sub.upper.datum, slab.upper.datum)
+            && sub_high < s_high)
+            || (is_agl_like_datum(sub.upper.datum)
+                && (is_msl_like_datum(slab.upper.datum)
+                    || slab.upper.datum == AltitudeDatum::Unlimited)
+                && sub_high < s_high);
+        if has_above_remainder {
             next_slabs.push(Slab3d {
                 polygons: overlap,
                 lower: sub.upper,

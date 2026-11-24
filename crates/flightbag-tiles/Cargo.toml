@@ -14,6 +14,7 @@ workspace = true
 flightbag-core.workspace = true
 flightbag-nasr.workspace = true
 i_overlay.workspace = true
+image.workspace = true
 pmtiles.workspace = true
 serde.workspace = true
 serde_json.workspace = true

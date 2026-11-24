@@ -2,8 +2,11 @@
 
 pub mod archive;
 pub mod clip;
+pub mod manifest;
 pub mod mvt;
+pub mod overview;
 pub mod pyramid;
+pub mod window;
 
 use std::fs;
 use std::path::Path;
@@ -13,7 +16,16 @@ use flightbag_nasr::boolean2d::polygons_bbox;
 use flightbag_nasr::{NasrAirspaceCounts, NasrArchiveFingerprint, ResolvedCycle};
 
 pub use archive::ArchiveError;
+pub use manifest::{
+    AIRSPACE_VFR_SECTIONAL_STYLE_JSON, PublishedChartManifest, RasterArchiveStats, RollingEntry,
+    RollingManifest, build_raster_chart_pmtiles, build_rolling_manifest, select_active_entry,
+    write_chart_manifest, write_local_vfr_sectional_style,
+};
 pub use pyramid::{MAX_ZOOM, MIN_ZOOM};
+pub use window::{
+    AuthorityEditions, CurrentAlias, CycleIndex, EditionWindow, IndexedEdition, build_cycle_index,
+    is_iso_utc_instant, select_edition_window,
+};
 
 /// Output metrics of a compiled `airspace.pmtiles` archive.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -338,6 +350,9 @@ mod tests {
             assert_eq!(bytes.get(..8), Some(b"PMTiles\x03".as_slice()));
         }
         drop(fs::remove_file(&out_path));
+        drop(fs::remove_file(
+            std::env::temp_dir().join("flightbag_test_airspace.pmtiles.sha256"),
+        ));
     }
 
     #[test]

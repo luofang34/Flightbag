@@ -88,6 +88,34 @@ pub struct TransportResponse {
     pub status: u16,
     /// Streaming response body.
     pub body: Box<dyn Read>,
+    /// Cache validators the server attached to the response.
+    pub validators: UpstreamValidators,
+}
+
+/// HTTP cache validators identifying one posting of an upstream archive.
+///
+/// An authority can re-post an edition under an unchanged URL, so a publisher compares these
+/// against the values recorded at its last build to decide whether that build is still current.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpstreamValidators {
+    /// `Last-Modified` header value, verbatim.
+    pub last_modified: Option<String>,
+    /// `ETag` header value, verbatim.
+    pub etag: Option<String>,
+    /// Full archive length from `Content-Range` (`bytes 0-0/<total>`), or `Content-Length`
+    /// when the server ignored the range and answered `200`.
+    pub size_bytes: Option<u64>,
+}
+
+/// Outcome of probing one upstream archive URL.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpstreamProbe {
+    /// Probed URL.
+    pub url: String,
+    /// Whether the authority currently serves the archive.
+    pub published: bool,
+    /// Validators of the served posting (all `None` when `published` is `false`).
+    pub validators: UpstreamValidators,
 }
 
 /// Blocking HTTP GET transport.
@@ -125,10 +153,23 @@ impl UreqTransport {
             req = req.set("Range", range_val);
         }
         match req.call() {
-            Ok(resp) | Err(ureq::Error::Status(_, resp)) => Ok(TransportResponse {
-                status: resp.status(),
-                body: Box::new(resp.into_reader()),
-            }),
+            Ok(resp) | Err(ureq::Error::Status(_, resp)) => {
+                let status = resp.status();
+                let validators = UpstreamValidators {
+                    last_modified: resp.header("Last-Modified").map(str::to_owned),
+                    etag: resp.header("ETag").map(str::to_owned),
+                    size_bytes: total_size_bytes(
+                        status,
+                        resp.header("Content-Range"),
+                        resp.header("Content-Length"),
+                    ),
+                };
+                Ok(TransportResponse {
+                    status,
+                    body: Box::new(resp.into_reader()),
+                    validators,
+                })
+            }
             Err(err) => Err(FetchError::Network {
                 url: url.to_owned(),
                 reason: err.to_string(),
@@ -179,14 +220,51 @@ pub fn probe_nasr_published(
     transport: &dyn Transport,
     cycle: &ResolvedCycle,
 ) -> Result<bool, FetchError> {
-    let resp = transport.get_blocking(&cycle.nasr_url, Some("bytes=0-0"))?;
+    probe_upstream_archive(transport, &cycle.nasr_url).map(|probe| probe.published)
+}
+
+/// Probes `url` with a 1-byte `Range` GET and reports whether the archive is served together
+/// with the validators of that posting.
+///
+/// Only `404`/`410` mean "not published": any other failure is an error, so an upstream outage
+/// is never mistaken for a missing or a changed edition.
+///
+/// # Errors
+///
+/// Returns [`FetchError`] on network failure or unexpected server status.
+pub fn probe_upstream_archive(
+    transport: &dyn Transport,
+    url: &str,
+) -> Result<UpstreamProbe, FetchError> {
+    let resp = transport.get_blocking(url, Some("bytes=0-0"))?;
     match resp.status {
-        200 | 206 => Ok(true),
-        404 | 410 => Ok(false),
+        200 | 206 => Ok(UpstreamProbe {
+            url: url.to_owned(),
+            published: true,
+            validators: resp.validators,
+        }),
+        404 | 410 => Ok(UpstreamProbe {
+            url: url.to_owned(),
+            published: false,
+            validators: UpstreamValidators::default(),
+        }),
         status => Err(FetchError::Status {
-            url: cycle.nasr_url.clone(),
+            url: url.to_owned(),
             status,
         }),
+    }
+}
+
+/// Derives the full archive length from the headers of a ranged (`206`) or whole (`200`) response.
+fn total_size_bytes(
+    status: u16,
+    content_range: Option<&str>,
+    content_length: Option<&str>,
+) -> Option<u64> {
+    match status {
+        206 => content_range?.rsplit_once('/')?.1.trim().parse().ok(),
+        200 => content_length?.trim().parse().ok(),
+        _ => None,
     }
 }
 
@@ -378,3 +456,6 @@ fn file_name_str(path: &Path) -> String {
         .map(|os| os.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod tests;

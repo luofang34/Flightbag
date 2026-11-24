@@ -40,7 +40,7 @@ closed-loop simulation (`Simulate`).
 | `flightbag` | Yes (`alloc`) | Umbrella re-export crate for flight/EFB/renderer consumers |
 | `flightbag-nasr` | `std` | Pure-Rust FAA 28-day NASR fetcher, ESRI Shapefile reader (`Class_Airspace`), AIXM 5.1 SUA 3D CSG parser (`SaaSubscriberFile`), and boolean shelf normalizer |
 | `flightbag-tiles` | `std` | Pure-Rust MVT 2.1 protobuf encoder (`z2..=10`), `[-64, 4160]` polygon/line tile clipper, and `PMTiles` v3 + `manifest.json` writer |
-| `flightbag-cli` | `std` | `flightbag` CLI (`probe-nasr`, `build-nasr`) |
+| `flightbag-cli` | `std` | `flightbag` CLI (`plan`, `probe-*`, `build-*`, `manifest`, `index`, `sync`) |
 
 ## Building NASR 3D Airspace Locally
 
@@ -56,17 +56,45 @@ cargo run --release -p flightbag-cli -- build-nasr \
   --out-dir dist/cycles/current
 ```
 
-## Deploying NASR 3D Airspace (GitHub Releases + GitHub Pages)
+## Publishing Editions (GitHub Releases + GitHub Pages)
 
-`.github/workflows/airac-pages.yml` runs on manual `workflow_dispatch` (no
-scheduled cycle cron job), compiles the requested FAA 28-day NASR edition in
-pure Rust, publishes an immutable `airac-YYYY-MM-DD` GitHub Release
-(`airspace.pmtiles` + `manifest.json`), and deploys static HTTP Range-ready
-endpoints to GitHub Pages:
+`.github/workflows/airac-pages.yml` runs `scripts/publish-editions.sh` every three hours, three
+more times just after the Thursday 09:01Z AIRAC cutover, and on manual `workflow_dispatch`.
+Every run does the same thing, so a delayed or dropped scheduled run is made up by the next one:
 
-- `cycles.json` — metadata for the deployed edition
-- `styles/airspace_vfr.json` — MapLibre VFR 3D volumetric style JSON
-- `cycles/current/airspace.pmtiles` & `cycles/current/manifest.json`
+1. Probe FAA for the effective and the next 28-day NASR and CIFP editions.
+2. Build an edition only when its `airac-YYYY-MM-DD` Release is incomplete or FAA re-posted the
+   archive (`Last-Modified` or size changed since the recorded build). A run with nothing new
+   stops after the probes.
+3. Publish `airspace.pmtiles`, `cifp_procedures.bin`, their `.sha256` companions and manifests
+   to the cycle's Release. The next edition is published as a prerelease as soon as FAA posts
+   it, weeks before it is effective.
+4. Regenerate the rolling manifest (`flightbag-manifest` Release) and `cycles.json`, and
+   redeploy GitHub Pages when either changed.
+
+`current` is decided by the wall clock against each edition's `effective_from_utc`, so an
+edition can be downloaded ahead of time but is never `current` before its effective instant.
+If the next edition fails to build, the run reports it and leaves `current` alone; if no
+effective NASR edition is published, the run fails and the deployed site stays as it was.
+
+GitHub Pages (CORS and HTTP `Range`, usable from a browser):
+
+- `cycles.json` — per authority, the `current` and `upcoming` edition with effective window,
+  size, SHA-256, Release URL and site path
+- `manifest.json` — rolling manifest of every published edition (`flightbag sync` input)
+- `cycles/YYYY-MM-DD/` — artifacts of the effective and the pre-staged edition
+- `cycles/current/` — copy of the effective edition; it changes only when a run completes
+  after the cutover, so clients that must switch on time read `effective_until_utc` and the
+  `upcoming` entry from `cycles.json`
+- `styles/airspace_vfr.json` — MapLibre VFR 3D volumetric style
+
+Release assets answer HTTP `Range` but send no CORS headers, so `pmtiles://` URLs pointing at
+them work in native clients only. Artifacts above 90 MB are never copied to Pages; their
+`cycles.json` entry carries a Release URL and no site path.
+
+Raster chart archives (`build-charts`) are not built by the workflow: FAA's tile service
+serves only the edition in force, so a chart edition cannot be pre-staged from it, and the
+national archives exceed what Pages can host.
 
 ## Viewing 3D Airspace in `maplibre-rs`
 

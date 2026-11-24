@@ -126,3 +126,97 @@ fn airspace_volume_contracts_and_vertical_limits() {
     assert_eq!(VerticalLimit::SURFACE.datum.renderer_datum(), "agl");
     assert_eq!(VerticalLimit::flight_level(180).value_ft, 18_000);
 }
+
+#[test]
+fn cifp_airway_expansion_respects_segment_breaks_and_procedure_seam_dedup() {
+    use crate::{
+        AirwayRouteClass, AltitudeConstraintKind, CifpAirway, CifpAirwayFix, CifpProcedure,
+        CifpProcedureLeg, CifpTransition, CifpWaypointKind, PathTerminator, ProcedureKind,
+        ProcedurePhase,
+    };
+
+    let fix = |seq: u16, id: &str, brk: bool| CifpAirwayFix {
+        seq_num: seq,
+        fix_ident: String::from(id),
+        icao_region: *b"K6",
+        kind: CifpWaypointKind::EnrouteWaypoint,
+        latitude_e6: 40_000_000,
+        longitude_e6: -74_000_000,
+        min_alt_ft: if brk { 0 } else { 3_000 },
+        max_alt_ft: 17_500,
+        segment_break_after: brk,
+    };
+    let v3 = CifpAirway {
+        route_ident: String::from("V3"),
+        route_class: AirwayRouteClass::from_route_ident("V3"),
+        fixes: vec![
+            fix(10, "MUE", false),
+            fix(20, "PARIS", true),
+            fix(30, "EYW", false),
+            fix(40, "MXE", false),
+            fix(50, "SBJ", true),
+        ],
+    };
+    assert_eq!(v3.route_class, AirwayRouteClass::Victor);
+    // Cannot bridge across Hawaii (`PARIS` break) to East Coast (`EYW`).
+    assert!(v3.expand_inclusive("MUE", "EYW").is_none());
+    // Forward and reverse expansion on the East Coast segment works cleanly.
+    let fwd = v3.expand_inclusive("EYW", "SBJ").unwrap_or_default();
+    assert_eq!(fwd.len(), 3);
+    let rev = v3.expand_inclusive("SBJ", "EYW").unwrap_or_default();
+    assert_eq!(rev.len(), 3);
+    assert_eq!(rev.first().map(|f| f.fix_ident.as_str()), Some("SBJ"));
+    assert_eq!(rev.last().map(|f| f.fix_ident.as_str()), Some("EYW"));
+
+    let leg = |seq: u16, id: &str, pt: PathTerminator, missed: bool| CifpProcedureLeg {
+        seq_num: seq,
+        fix_ident: String::from(id),
+        kind: CifpWaypointKind::TerminalWaypoint,
+        path_terminator: pt,
+        has_coordinates: true,
+        latitude_e6: 40_580_000,
+        longitude_e6: -74_740_000,
+        alt_constraint: AltitudeConstraintKind::AtOrAbove,
+        alt1_ft: 2_600,
+        alt2_ft: 0,
+        speed_limit_kt: 0,
+        is_missed_approach: missed,
+        is_iaf: false,
+        is_faf: false,
+        is_mapt: false,
+    };
+    let r22 = CifpProcedure {
+        airport_ident: String::from("N51"),
+        kind: ProcedureKind::Approach,
+        procedure_ident: String::from("R22"),
+        route_type: b'R',
+        transitions: vec![
+            CifpTransition {
+                transition_ident: String::from("PIYIN"),
+                phase: ProcedurePhase::EnrouteOrFeederTransition,
+                route_type: b'A',
+                legs: vec![
+                    leg(10, "PIYIN", PathTerminator::IF, false),
+                    leg(20, "DODLY", PathTerminator::TF, false),
+                ],
+            },
+            CifpTransition {
+                transition_ident: String::new(),
+                phase: ProcedurePhase::CommonCore,
+                route_type: b'R',
+                legs: vec![
+                    leg(10, "DODLY", PathTerminator::IF, false),
+                    leg(20, "CAVZA", PathTerminator::TF, false),
+                    leg(30, "RW22", PathTerminator::TF, false),
+                    leg(50, "MOSSE", PathTerminator::DF, true),
+                ],
+            },
+        ],
+    };
+    let active = r22.assemble_legs(Some("PIYIN"), None, false);
+    assert_eq!(active.len(), 4);
+    assert_eq!(active.get(1).map(|l| l.fix_ident.as_str()), Some("DODLY"));
+    assert_eq!(active.get(3).map(|l| l.fix_ident.as_str()), Some("RW22"));
+    let with_missed = r22.assemble_legs(Some("PIYIN"), None, true);
+    assert_eq!(with_missed.len(), 5);
+}

@@ -9,7 +9,8 @@ use flightbag_core::{
 };
 
 use crate::boolean2d::{
-    intersect_polygons, normalize_raw_rings, polygons_bbox, subtract_polygons, union_polygons,
+    intersect_polygons, normalize_raw_rings, polygons_area_deg2, polygons_bbox, subtract_polygons,
+    union_polygons,
 };
 use crate::{GeoBbox, NasrCompileError, canonical_airspace_key};
 
@@ -211,34 +212,86 @@ fn normalize_complex_shelves(shelves: Vec<RawClassShelf>) -> Vec<RawClassShelf> 
             if !item.exclusion && !excl_footprint.is_empty() {
                 item.polygons = subtract_polygons(&item.polygons, &excl_footprint);
             }
-            if !item.polygons.is_empty() {
+            if item.polygons.is_empty() {
+                continue;
+            }
+            if let Some(existing) = cleaned.iter_mut().find(|s| {
+                s.exclusion == item.exclusion && s.lower == item.lower && s.upper == item.upper
+            }) {
+                existing.polygons = union_polygons(&existing.polygons, &item.polygons);
+            } else {
                 cleaned.push(item);
             }
         }
 
-        // 2. Within Class B and Class C wedding-cake complexes, outer higher-floor shelves
-        //    (e.g. SEA AREA H 3000..10000) sometimes cover the full rectangle over inner full-height
-        //    cores (SEA AREA A 0..10000). Subtract any shelf whose vertical span strictly contains
-        //    another shelf's vertical span so 3D translucent roofs/walls never double-blend.
+        // 2. Resolve lateral overlaps within multi-shelf Class B, C, and D complexes with a
+        //    strict asymmetric precedence relation:
+        //    - A smaller local relief/core cutout substantially contained inside a larger
+        //      background shelf (`area_small < 0.65 * area_big` and `inter > 0.55 * area_small`,
+        //      e.g. KORF `40/20` inside `40/12`, KDCA `AREA F` inside `AREA D`, SEA `AREA A`
+        //      inside `AREA H`) owns its footprint and carves a hole out of the larger shelf.
+        //    - Otherwise (partial boundary/chord overlap where neither shelf contains the other,
+        //      e.g. KSNA `44/SFC` abutting/overlapping `54/15` & `54/25`), the lower-floor core
+        //      (`lower_ft ASC`, then `upper_ft DESC`, then `idx ASC`) owns the shared strip so
+        //      outer higher ceilings never overhang inner surface cores.
         if matches!(
             local_type,
-            ControlledLocalType::ClassB | ControlledLocalType::ClassC
+            ControlledLocalType::ClassB | ControlledLocalType::ClassC | ControlledLocalType::ClassD
         ) && cleaned.len() > 1
         {
             let snapshot = cleaned.clone();
+            let areas: Vec<f64> = snapshot
+                .iter()
+                .map(|s| polygons_area_deg2(&s.polygons))
+                .collect();
+            let bboxes: Vec<Option<GeoBbox>> = snapshot
+                .iter()
+                .map(|s| polygons_bbox(&s.polygons))
+                .collect();
+
             for (idx, item) in cleaned.iter_mut().enumerate() {
+                if item.exclusion {
+                    continue;
+                }
+                let Some(item_bbox) = bboxes.get(idx).copied().flatten() else {
+                    continue;
+                };
+                let area_item = areas.get(idx).copied().unwrap_or(0.0);
                 for (other_idx, other) in snapshot.iter().enumerate() {
-                    if idx == other_idx {
+                    if idx == other_idx || other.exclusion {
                         continue;
                     }
-                    let other_low = other.lower.value_ft;
-                    let other_high = other.upper.value_ft;
-                    let item_low = item.lower.value_ft;
-                    let item_high = item.upper.value_ft;
-                    let strictly_contains_vertically = other_low <= item_low
-                        && other_high >= item_high
-                        && (other_low < item_low || other_high > item_high);
-                    if strictly_contains_vertically {
+                    let Some(other_bbox) = bboxes.get(other_idx).copied().flatten() else {
+                        continue;
+                    };
+                    if !item_bbox.intersects(other_bbox) {
+                        continue;
+                    }
+                    let inter = intersect_polygons(
+                        snapshot
+                            .get(idx)
+                            .map_or([].as_slice(), |s| s.polygons.as_slice()),
+                        &other.polygons,
+                    );
+                    let inter_area = polygons_area_deg2(&inter);
+                    if inter_area <= 1e-9 {
+                        continue;
+                    }
+                    let area_other = areas.get(other_idx).copied().unwrap_or(0.0);
+                    let other_is_local_cutout =
+                        area_other < 0.65 * area_item && inter_area > 0.55 * area_other;
+                    let item_is_local_cutout =
+                        area_item < 0.65 * area_other && inter_area > 0.55 * area_item;
+
+                    let other_wins = if other_is_local_cutout {
+                        true
+                    } else if item_is_local_cutout {
+                        false
+                    } else {
+                        (other.lower.value_ft, -other.upper.value_ft, other_idx)
+                            < (item.lower.value_ft, -item.upper.value_ft, idx)
+                    };
+                    if other_wins {
                         item.polygons = subtract_polygons(&item.polygons, &other.polygons);
                     }
                 }
@@ -882,6 +935,73 @@ mod tests {
             resolved
                 .iter()
                 .any(|s| s.ident == "TIW" && s.local_type == ControlledLocalType::ClassE4Extension)
+        );
+    }
+
+    #[test]
+    fn preserves_local_relief_cutouts_and_trims_outer_wedges_from_sfc_cores() {
+        // 1. KORF-style local relief shelf (2000..4000) contained inside outer ring (1200..4000).
+        let orf_outer = RawClassShelf {
+            ident: "ORF".into(),
+            name: "NORFOLK CLASS C".into(),
+            sector: Some("OUTER".into()),
+            class: ControlledAirspaceClass::ClassC,
+            local_type: ControlledLocalType::ClassC,
+            lower: VerticalLimit::msl_ft(1_200),
+            upper: VerticalLimit::msl_ft(4_000),
+            hours: None,
+            comm_name: None,
+            exclusion: false,
+            polygons: rect_poly(-76.40, 36.75, -76.00, 37.05),
+        };
+        let orf_ngu_relief = RawClassShelf {
+            sector: Some("NGU CUTOUT".into()),
+            lower: VerticalLimit::msl_ft(2_000),
+            polygons: rect_poly(-76.33, 36.90, -76.26, 36.97),
+            ..orf_outer.clone()
+        };
+        let orf_norm = normalize_complex_shelves(vec![orf_outer, orf_ngu_relief]);
+        assert!(
+            orf_norm
+                .iter()
+                .any(|s| s.sector.as_deref() == Some("NGU CUTOUT") && !s.polygons.is_empty())
+        );
+
+        // 2. KSNA-style inner SFC core (0..4400) partially overlapped by outer wedge (1500..5400).
+        let sna_core = RawClassShelf {
+            ident: "SNA".into(),
+            name: "JOHN WAYNE CLASS C".into(),
+            sector: Some("CORE".into()),
+            class: ControlledAirspaceClass::ClassC,
+            local_type: ControlledLocalType::ClassC,
+            lower: VerticalLimit::SURFACE,
+            upper: VerticalLimit::msl_ft(4_400),
+            hours: None,
+            comm_name: None,
+            exclusion: false,
+            polygons: rect_poly(-117.92, 33.62, -117.82, 33.72),
+        };
+        let sna_wedge = RawClassShelf {
+            sector: Some("WEDGE 54/15".into()),
+            lower: VerticalLimit::msl_ft(1_500),
+            upper: VerticalLimit::msl_ft(5_400),
+            polygons: rect_poly(-117.84, 33.55, -117.74, 33.66),
+            ..sna_core.clone()
+        };
+        let sna_norm = normalize_complex_shelves(vec![sna_core.clone(), sna_wedge]);
+        let core_after = sna_norm
+            .iter()
+            .find(|s| s.sector.as_deref() == Some("CORE"));
+        let wedge_after = sna_norm
+            .iter()
+            .find(|s| s.sector.as_deref() == Some("WEDGE 54/15"));
+        assert!(core_after.is_some_and(|c| {
+            (polygons_area_deg2(&c.polygons) - polygons_area_deg2(&sna_core.polygons)).abs() < 1e-9
+        }));
+        assert!(
+            wedge_after.is_some_and(|w| {
+                intersect_polygons(&w.polygons, &sna_core.polygons).is_empty()
+            })
         );
     }
 }
