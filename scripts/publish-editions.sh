@@ -8,7 +8,11 @@
 #   - `current`/`upcoming` come from `flightbag index`, a pure function of the published
 #     editions and the instant, never from which trigger started the run;
 #   - a failing `upcoming` edition is reported and skipped; a missing `current` NASR edition
-#     leaves the deployed site untouched.
+#     leaves the deployed site untouched;
+#   - every artifact gets an IPFS CID companion, and when a node or pinning service is
+#     configured (`scripts/ipfs-pin.sh` lists the IPFS_* variables) each cycle is pinned and
+#     the gateway verified to serve it is listed. Pinning never fails a scheduled run, except
+#     when a provider stores an upload under another CID than the one computed here.
 #
 # Environment:
 #   FLIGHTBAG_BIN   flightbag CLI                     (default ./target/release/flightbag)
@@ -21,7 +25,7 @@
 #   LIVE_INDEX_URL  deployed cycles.json (manifest.json beside it); identical files skip the redeploy
 #   FORCE_REBUILD   true rebuilds both editions of every product
 #   FORCE_DEPLOY    true stages the site even when the index is unchanged
-#   DRY_RUN         true builds and stages locally but performs no Release write
+#   DRY_RUN         true builds and stages locally but performs no Release write and pins nothing
 #   GITHUB_OUTPUT   receives deploy=<bool> and required_failed=<bool>
 set -euo pipefail
 
@@ -43,39 +47,10 @@ SITE_MAX_TOTAL_BYTES="${SITE_MAX_TOTAL_BYTES:-900000000}"
 MANIFEST_TAG="flightbag-manifest"
 export GH_REPO="$REPO_SLUG"
 
-# --- Product table -------------------------------------------------------------------------
-# One row per product of one authority. A product is probed with `flightbag probe-<name>`,
-# built with `flightbag build-<name>`, and listed in the rolling manifest from its manifest
-# file. Supporting another authority means adding its rows here and its two subcommands.
-PRODUCTS="nasr cifp"
-
-product_artifact() {
-  case "$1" in
-    nasr) echo "airspace.pmtiles" ;;
-    cifp) echo "cifp_procedures.bin" ;;
-    *) return 1 ;;
-  esac
-}
-
-product_manifest() {
-  case "$1" in
-    nasr) echo "manifest.json" ;;
-    cifp) echo "cifp_faa_cifp.json" ;;
-    *) return 1 ;;
-  esac
-}
-
-product_authority() {
-  case "$1" in
-    nasr) echo "faa_nasr" ;;
-    cifp) echo "faa_cifp" ;;
-    *) return 1 ;;
-  esac
-}
-
-# The marker records the upstream validators an edition was built from. It is deleted before
-# and uploaded after the edition's other assets, so its presence means the upload completed.
-product_marker() { echo "$1.upstream.json"; }
+# shellcheck source=scripts/edition-products.sh
+source "$ROOT/scripts/edition-products.sh"
+# shellcheck source=scripts/ipfs-pin.sh
+source "$ROOT/scripts/ipfs-pin.sh"
 
 # --- Reporting -----------------------------------------------------------------------------
 REQUIRED_FAILED=false
@@ -140,7 +115,9 @@ upload_edition() {
   if has_line "$assets" "$marker"; then
     gh_write release delete-asset "$tag" "$marker" -y || return 1
   fi
-  gh_write release upload "$tag" "$out/$artifact" "$out/$artifact.sha256" "$out/$manifest" --clobber || return 1
+  "$BIN" ipfs-cid --write "$out/$artifact" >/dev/null || return 1
+  gh_write release upload "$tag" "$out/$artifact" "$out/$artifact.sha256" "$out/$artifact.cid.json" \
+    "$out/$manifest" --clobber || return 1
   printf '%s\n' "$fingerprint" >"$out/$marker"
   gh_write release upload "$tag" "$out/$marker" --clobber || return 1
 }
@@ -209,13 +186,53 @@ ensure_edition() {
 }
 
 # --- Index ---------------------------------------------------------------------------------
-# Downloads the manifest of every completely uploaded edition from the effective cycle onwards
-# and derives the rolling manifest and the index from them, so the result reflects what is
+manifest_sha256() {
+  jq -r --arg f "$2" '[.. | objects | select(.file? == $f) | .sha256_hex] | first // empty' "$1"
+}
+
+# Echoes a local copy of a published artifact whose SHA-256 is `want` (by default the one its
+# CID companion records), downloading the Release asset when this run did not build it.
+ipfs_artifact_path() {
+  local date="$1" file="$2" want="${3:-}" candidate fetched="$WORK/artifacts/$1"
+  [ -n "$want" ] || want="$(jq -r '.sha256_hex' "$WORK/cycles/$date/$file.cid.json" 2>/dev/null || true)"
+  [ -n "$want" ] || return 1
+  for candidate in "$WORK/build/$date/$file" "$fetched/$file"; do
+    if [ -f "$candidate" ] && [ "$(sha256_of "$candidate")" = "$want" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  "$GH" release download "airac-$date" -p "$file" -D "$fetched" --clobber >/dev/null 2>&1 || return 1
+  [ "$(sha256_of "$fetched/$file")" = "$want" ] && echo "$fetched/$file"
+}
+
+ipfs_record_published() { gh_write release upload "airac-$1" "$2" --clobber; }
+
+# An edition published without a CID companion gets one computed from its Release asset, so
+# no edition has to be rebuilt to be addressable by content. A companion left without a
+# matching asset is emptied: no CID is better than the CID of other bytes.
+backfill_cid_record() {
+  local product="$1" date="$2" record="$3" manifest="$4" artifact path
+  artifact="$(product_artifact "$product")"
+  : >"$record"
+  if ! path="$(ipfs_artifact_path "$date" "$artifact" "$(manifest_sha256 "$manifest" "$artifact")")"; then
+    warn "$product $date: no asset matches the published manifest; its CID is not recorded"
+    return 0
+  fi
+  "$BIN" ipfs-cid --write "$path" >/dev/null || return 0
+  cp "$path.cid.json" "$record"
+  gh_write release upload "airac-$date" "$record" --clobber \
+    || warn "$product $date: uploading $(basename "$record") failed"
+}
+
+# Downloads the manifest of every completely uploaded edition that can still be effective and
+# derives the rolling manifest and the index from them, so the result reflects what is
 # actually published rather than what this run happened to build.
 collect_published_manifests() {
-  local floor="$1" tag date assets product dir
-  rm -rf "$WORK/cycles"
+  local plan="$1" tag date assets product dir floor manifest record artifact
   mkdir -p "$WORK/cycles"
+  find "$WORK/cycles" -mindepth 1 -delete
+  floor="$(jq -r '[.[] | objects | .current.effective_date] | min' <<<"$plan")"
   while IFS= read -r tag; do
     [[ "$tag" =~ ^airac-[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
     date="${tag#airac-}"
@@ -224,11 +241,38 @@ collect_published_manifests() {
     dir="$WORK/cycles/$date"
     mkdir -p "$dir"
     for product in $PRODUCTS; do
-      if has_line "$assets" "$(product_marker "$product")" \
-        && has_line "$assets" "$(product_manifest "$product")"; then
-        "$GH" release download "$tag" -p "$(product_manifest "$product")" -D "$dir" --clobber >/dev/null
+      artifact="$(product_artifact "$product")"
+      manifest="$(product_manifest "$product")"
+      record="$(product_cid_record "$product")"
+      # Every companion is fetched, listed or not: the cycle directory links all of them, so
+      # its CID stays the same when the edition of one product expires before the others.
+      if has_line "$assets" "$record"; then
+        "$GH" release download "$tag" -p "$record" -D "$dir" --clobber >/dev/null
+      fi
+      [[ "$date" < "$(jq -r --arg g "$(product_cycle_grid "$product")" '.[$g].current.effective_date' <<<"$plan")" ]] && continue
+      has_line "$assets" "$manifest" || continue
+      if [ "$(product_storage "$product")" = "release" ]; then
+        has_line "$assets" "$(product_marker "$product")" || continue
+      elif [ ! -f "$dir/$record" ]; then
+        # Without its companion an IPFS-only artifact has no address, so it is not listed.
+        continue
+      fi
+      "$GH" release download "$tag" -p "$manifest" -D "$dir" --clobber >/dev/null
+      if [ "$(jq -r '.sha256_hex' "$dir/$record" 2>/dev/null || true)" \
+        = "$(manifest_sha256 "$dir/$manifest" "$artifact")" ]; then
+        continue
+      fi
+      if [ "$(product_storage "$product")" = "release" ]; then
+        backfill_cid_record "$product" "$date" "$dir/$record" "$dir/$manifest"
+      else
+        warn "$product $date: $record does not describe the artifact of $manifest; not listed"
+        find "$dir" -name "$manifest" -delete
       fi
     done
+    find "$dir" -name '*.cid.json' -empty -delete
+    if has_line "$assets" "$IPFS_PIN_RECORD"; then
+      "$GH" release download "$tag" -p "$IPFS_PIN_RECORD" -D "$dir" --clobber >/dev/null
+    fi
   done < <("$GH" release list --limit 200 --json tagName --jq '.[].tagName' | sort)
 }
 
@@ -293,7 +337,9 @@ write_site_index_page() {
     | .[0] as $slot | .[1]
     | "<tr><td><code>\($authority)</code></td><td>\($slot)</td><td>\(.effective_from_utc)</td><td>\(.effective_until_utc)</td><td>"
       + (if .site_path then "<a href=\"\(.site_path)\"><code>\(.site_path)</code></a>"
-         else "<a href=\"\(.release_url)\">Release asset</a>" end)
+         elif .ipfs_url then "<a href=\"\(.ipfs_url)\">IPFS gateway</a>"
+         elif .release_url then "<a href=\"\(.release_url)\">Release asset</a>"
+         else "<code>ipfs://\(.ipfs_directory_cid)/\(.file)</code>" end)
       + "</td></tr>"' "$WORK/cycles.json")"
   cat >"$SITE/index.html" <<EOF
 <!doctype html>
@@ -348,8 +394,9 @@ check_site_limits() {
 
 # --- Run -----------------------------------------------------------------------------------
 main() {
-  local plan now current upcoming product deploy=true live_dir
+  local plan now current upcoming product deploy=true live_dir ipfs_args=()
   mkdir -p "$WORK"
+  trap ipfs_teardown EXIT
   if [ -n "${NOW_UTC:-}" ]; then
     plan="$("$BIN" plan --now "$NOW_UTC")"
   else
@@ -361,18 +408,25 @@ main() {
   log "instant $now: current $current, upcoming $upcoming"
 
   for product in $PRODUCTS; do
+    if [ "$(product_storage "$product")" = "ipfs" ]; then
+      ipfs_args+=(--ipfs-only "$(product_artifact "$product")")
+    fi
+    [ "$(product_build "$product")" = "auto" ] || continue
     ensure_edition "$product" "$current" current
     ensure_edition "$product" "$upcoming" upcoming
   done
 
-  collect_published_manifests "$current"
+  collect_published_manifests "$plan"
+  pin_collected_cycles
+  [ -z "$IPFS_GATEWAY_URL" ] || ipfs_args+=(--ipfs-gateway "$IPFS_GATEWAY_URL")
   "$BIN" manifest --cycles-dir "$WORK/cycles" \
     --url-template "https://github.com/${REPO_SLUG}/releases/download/airac-{date}/{file}" \
-    --out "$WORK/manifest.json" >/dev/null
+    ${ipfs_args[@]+"${ipfs_args[@]}"} --out "$WORK/manifest.json" >/dev/null
   "$BIN" index --manifest "$WORK/manifest.json" --now "$now" \
     --site-max-bytes "$SITE_MAX_FILE_BYTES" --out "$WORK/cycles.json" >/dev/null
 
   for product in $PRODUCTS; do
+    [ "$(product_build "$product")" = "auto" ] || continue
     if ! jq -e --arg a "$(product_authority "$product")" '.editions[$a].current != null' \
       "$WORK/cycles.json" >/dev/null; then
       problem current "$product: no effective edition is published for $now"
@@ -399,6 +453,7 @@ main() {
       log "deployed index and manifest are already up to date"
       deploy=false
     fi
+    unpin_expired_cycles "$current" || warn "IPFS: removing expired pins did not complete"
   fi
 
   if [ "$deploy" = "true" ]; then
