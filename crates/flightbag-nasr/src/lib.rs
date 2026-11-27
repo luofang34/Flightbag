@@ -16,8 +16,10 @@ pub mod charts;
 pub mod cifp;
 pub mod class_airspace;
 pub mod cycles;
+pub mod dtpp;
 pub mod fetch;
 pub mod sua_aixm;
+pub mod waypoints;
 
 use std::fs::File;
 use std::path::Path;
@@ -36,8 +38,20 @@ pub use cifp::{
     probe_cifp_published, write_cifp_pack,
 };
 pub use cycles::{CycleSpec, NasrCycleError, ResolvedCycle};
+pub use dtpp::{
+    CompiledDtpp, DEFAULT_DTPP_AIRPORTS, DEFAULT_DTPP_BOUNDS, DTPP_BASE_URL, DtppBinaryArtifact,
+    DtppCatalogEntry, DtppCompileError, DtppCounts, FBDTPP01_MAGIC, ParsedDtppRecord,
+    PublishedDtppManifest, compile_dtpp_records, dtpp_metafile_url, dtpp_pdf_url,
+    encode_dtpp_binary, fetch_dtpp_metafile, fingerprint_local_dtpp_metafile, parse_dtpp_metafile,
+    select_curated_plates, write_dtpp_pack,
+};
 pub use fetch::{
     FetchError, NasrArchiveFingerprint, Transport, UpstreamProbe, UpstreamValidators, UreqTransport,
+};
+pub use waypoints::{
+    CompiledWaypoints, PublishedWaypointsManifest, SIMWPT01_MAGIC, SIMWPT01_VERSION,
+    WaypointRecord, WaypointsBinaryArtifact, WaypointsCompileError, WaypointsCounts,
+    compile_nasr_waypoints_zip, encode_waypoints_binary, write_waypoints_pack,
 };
 
 /// Optional geographic bounding box `(min_lon, min_lat, max_lon, max_lat)` in WGS-84 degrees.

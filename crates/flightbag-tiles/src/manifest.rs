@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 
 use flightbag_core::{EditionManifest, SourceDigest};
-use flightbag_nasr::PublishedCifpManifest;
 use flightbag_nasr::charts::{HarvestedRasterPyramid, RasterChartSeries, ResolvedChartCycle};
+use flightbag_nasr::{PublishedCifpManifest, PublishedDtppManifest, PublishedWaypointsManifest};
 
 use crate::archive::{ArchiveError, RasterArchiveParams, write_raster_pmtiles_archive};
 use crate::ipfs::{ArtifactStorage, IpfsOptions, IpfsPublication, annotate_entries};
@@ -431,6 +431,71 @@ pub fn build_rolling_manifest(
             });
         }
 
+        let waypoints_manifest_path = cycle_dir.join("waypoints_faa_nasr_waypoints.json");
+        if waypoints_manifest_path.is_file() {
+            let bytes = fs::read(&waypoints_manifest_path).map_err(|source| ArchiveError::Io {
+                path: waypoints_manifest_path.clone(),
+                source,
+            })?;
+            let wpt: PublishedWaypointsManifest =
+                serde_json::from_slice(&bytes).map_err(|e| ArchiveError::Json(e.to_string()))?;
+            let url = expand_url_template(
+                url_template,
+                &wpt.effective_date,
+                &wpt.waypoints_binary.file,
+            );
+            entries.push(RollingEntry {
+                authority: wpt.authority,
+                effective_date: wpt.effective_date,
+                expires_date: wpt.expires_date,
+                airac_code: wpt.airac_code,
+                effective_from_utc: wpt.effective_from_utc,
+                effective_until_utc: wpt.effective_until_utc,
+                file: wpt.waypoints_binary.file,
+                url,
+                size_bytes: wpt.waypoints_binary.size_bytes,
+                sha256_hex: wpt.waypoints_binary.sha256_hex,
+                upstream_sha256_hex: wpt.upstream_sha256_hex,
+                min_zoom: 0,
+                max_zoom: 16,
+                bounds: wpt.waypoints_binary.bounds,
+                storage: ArtifactStorage::Release,
+                ipfs_cid: None,
+                mirror_urls: Vec::new(),
+            });
+        }
+
+        let dtpp_manifest_path = cycle_dir.join("dtpp_faa_dtpp.json");
+        if dtpp_manifest_path.is_file() {
+            let bytes = fs::read(&dtpp_manifest_path).map_err(|source| ArchiveError::Io {
+                path: dtpp_manifest_path.clone(),
+                source,
+            })?;
+            let dtpp: PublishedDtppManifest =
+                serde_json::from_slice(&bytes).map_err(|e| ArchiveError::Json(e.to_string()))?;
+            let url =
+                expand_url_template(url_template, &dtpp.effective_date, &dtpp.dtpp_binary.file);
+            entries.push(RollingEntry {
+                authority: dtpp.authority,
+                effective_date: dtpp.effective_date,
+                expires_date: dtpp.expires_date,
+                airac_code: dtpp.airac_code,
+                effective_from_utc: dtpp.effective_from_utc,
+                effective_until_utc: dtpp.effective_until_utc,
+                file: dtpp.dtpp_binary.file,
+                url,
+                size_bytes: dtpp.dtpp_binary.size_bytes,
+                sha256_hex: dtpp.dtpp_binary.sha256_hex,
+                upstream_sha256_hex: dtpp.upstream_sha256_hex,
+                min_zoom: 0,
+                max_zoom: 16,
+                bounds: dtpp.dtpp_binary.bounds,
+                storage: ArtifactStorage::Release,
+                ipfs_cid: None,
+                mirror_urls: Vec::new(),
+            });
+        }
+
         let files_iter = fs::read_dir(&cycle_dir).map_err(|source| ArchiveError::Io {
             path: cycle_dir.clone(),
             source,
@@ -628,6 +693,88 @@ mod tests {
                     == "https://github.com/luofang34/Flightbag/releases/download/airac-2026-10-29/vfr_terminal.pmtiles"
             }));
         }
+
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn rolls_waypoints_and_dtpp_manifests_into_rolling_manifest() {
+        let root = std::env::temp_dir().join("flightbag_test_wpt_dtpp_manifest");
+        drop(fs::remove_dir_all(&root));
+        let cycle_dir = root.join("2026-11-26");
+        fs::create_dir_all(&cycle_dir).unwrap();
+
+        let wpt_manifest = serde_json::json!({
+            "schema_version": 1,
+            "disclaimer": "test",
+            "edition_id": "flightbag-us-waypoints-2026-11-26",
+            "authority": "faa_nasr_waypoints",
+            "airac_code": "2612",
+            "cycle_index": 90,
+            "effective_date": "2026-11-26",
+            "expires_date": "2026-12-24",
+            "effective_from_utc": "2026-11-26T09:01:00Z",
+            "effective_until_utc": "2026-12-24T09:01:00Z",
+            "upstream_url": "https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_2026-11-26.zip",
+            "upstream_sha256_hex": "0".repeat(64),
+            "waypoints_binary": {
+                "file": "nasr_waypoints.bin",
+                "size_bytes": 1234,
+                "sha256_hex": "a".repeat(64),
+                "bounds": [-179.0, 17.0, -64.0, 71.0]
+            },
+            "counts": { "airports": 1, "navaids": 1, "fixes": 1, "total": 3 }
+        });
+        let dtpp_manifest = serde_json::json!({
+            "schema_version": 1,
+            "disclaimer": "test",
+            "edition_id": "flightbag-us-dtpp-2026-11-26",
+            "authority": "faa_dtpp",
+            "airac_code": "2612",
+            "cycle_index": 90,
+            "effective_date": "2026-11-26",
+            "expires_date": "2026-12-24",
+            "effective_from_utc": "2026-11-26T09:01:00Z",
+            "effective_until_utc": "2026-12-24T09:01:00Z",
+            "upstream_url": "https://aeronav.faa.gov/d-tpp/2612/xml_data/d-TPP_Metafile.xml",
+            "upstream_sha256_hex": "1".repeat(64),
+            "dtpp_binary": {
+                "file": "dtpp_plates.bin",
+                "size_bytes": 5678,
+                "sha256_hex": "b".repeat(64),
+                "bounds": [-179.9, 17.5, -64.0, 71.6]
+            },
+            "counts": { "airports": 1, "plate_records": 2, "unique_pdfs": 2 }
+        });
+
+        fs::write(
+            cycle_dir.join("waypoints_faa_nasr_waypoints.json"),
+            serde_json::to_vec_pretty(&wpt_manifest).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            cycle_dir.join("dtpp_faa_dtpp.json"),
+            serde_json::to_vec_pretty(&dtpp_manifest).unwrap(),
+        )
+        .unwrap();
+
+        let rolling_path = root.join("manifest.json");
+        let rolling = build_rolling_manifest(
+            &root,
+            "https://github.com/luofang34/Flightbag/releases/download/airac-{date}/{file}",
+            &IpfsOptions::default(),
+            &rolling_path,
+        )
+        .unwrap();
+        assert_eq!(rolling.entries.len(), 2);
+        assert!(select_active_entry(&rolling, "faa_nasr_waypoints", "2026-11-27T00:00:00Z").is_some_and(|e| {
+            e.file == "nasr_waypoints.bin"
+                && e.url == "https://github.com/luofang34/Flightbag/releases/download/airac-2026-11-26/nasr_waypoints.bin"
+        }));
+        assert!(select_active_entry(&rolling, "faa_dtpp", "2026-11-27T00:00:00Z").is_some_and(|e| {
+            e.file == "dtpp_plates.bin"
+                && e.url == "https://github.com/luofang34/Flightbag/releases/download/airac-2026-11-26/dtpp_plates.bin"
+        }));
 
         drop(fs::remove_dir_all(&root));
     }

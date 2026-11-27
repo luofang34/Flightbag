@@ -5,12 +5,14 @@
 # product means adding its row to each function and, for a product the publisher builds, its
 # `flightbag probe-<name>` and `flightbag build-<name>` subcommands.
 
-PRODUCTS="nasr cifp vfr_sectional vfr_terminal ifr_low ifr_high"
+PRODUCTS="nasr waypoints cifp dtpp vfr_sectional vfr_terminal ifr_low ifr_high"
 
 product_artifact() {
   case "$1" in
     nasr) echo "airspace.pmtiles" ;;
+    waypoints) echo "nasr_waypoints.bin" ;;
     cifp) echo "cifp_procedures.bin" ;;
+    dtpp) echo "dtpp_plates.bin" ;;
     vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "$1.pmtiles" ;;
     *) return 1 ;;
   esac
@@ -19,7 +21,9 @@ product_artifact() {
 product_manifest() {
   case "$1" in
     nasr) echo "manifest.json" ;;
+    waypoints) echo "waypoints_faa_nasr_waypoints.json" ;;
     cifp) echo "cifp_faa_cifp.json" ;;
+    dtpp) echo "dtpp_faa_dtpp.json" ;;
     vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "chart_faa_$1.json" ;;
     *) return 1 ;;
   esac
@@ -27,7 +31,8 @@ product_manifest() {
 
 product_authority() {
   case "$1" in
-    nasr | cifp | vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "faa_$1" ;;
+    waypoints) echo "faa_nasr_waypoints" ;;
+    nasr | cifp | dtpp | vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "faa_$1" ;;
     *) return 1 ;;
   esac
 }
@@ -39,7 +44,7 @@ product_authority() {
 #            `.sha256` and the `.cid.json` companion, and the bytes are fetched by CID.
 product_storage() {
   case "$1" in
-    nasr | cifp) echo "release" ;;
+    nasr | waypoints | cifp | dtpp) echo "release" ;;
     vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "ipfs" ;;
     *) return 1 ;;
   esac
@@ -52,7 +57,7 @@ product_storage() {
 #           edition is listed once its manifest and companions are on the cycle's Release.
 product_build() {
   case "$1" in
-    nasr | cifp) echo "auto" ;;
+    nasr | waypoints | cifp | dtpp) echo "auto" ;;
     vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "manual" ;;
     *) return 1 ;;
   esac
@@ -61,7 +66,7 @@ product_build() {
 # Key of the cycle grid in `flightbag plan` that the product follows.
 product_cycle_grid() {
   case "$1" in
-    nasr | cifp) echo "faa_nasr_28_day" ;;
+    nasr | waypoints | cifp | dtpp) echo "faa_nasr_28_day" ;;
     vfr_sectional | vfr_terminal | ifr_low | ifr_high) echo "faa_charts_56_day" ;;
     *) return 1 ;;
   esac

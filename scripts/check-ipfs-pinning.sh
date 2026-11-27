@@ -67,7 +67,7 @@ expect_json "$site/cycles.json" "$nasr_current | .ipfs_url == null and .ipfs_dir
     "without a gateway the index lists a directory CID and no gateway URL"
 expect_json "$site/manifest.json" '.schema_version == 2 and .ipfs.import == {cid_version: 1, multihash: "sha2-256", raw_leaves: true, chunker: "size-1048576", layout: "balanced", max_links: 174, directory: "basic"}' \
     "manifest must state the import parameters"
-expect_json "$site/manifest.json" '[.entries[] | .ipfs_cid != null and .mirror_urls == [] and .storage == "release"] | all and length == 4' \
+expect_json "$site/manifest.json" '[.entries[] | .ipfs_cid != null and .mirror_urls == [] and .storage == "release"] | all and length == 8' \
     "every published artifact must have a CID"
 expect_json "$rel/airac-2026-10-29/airspace.pmtiles.cid.json" ".cid == \"$airspace_cid\" and .size_bytes == 30" "CID companion must be a Release asset"
 [ -f "$site/cycles/2026-10-29/airspace.pmtiles.cid.json" ] || fail "CID companion must be on the site"
@@ -104,7 +104,7 @@ expect_output 'required_failed=false' "run without pinning budget"
 
 # --- Kubo node and gateway -----------------------------------------------------------------
 run_ok "2026-11-24T10:00:00Z" "${kubo_env[@]}"
-expect_calls '^kubo add flightbag-airac-' 4 "both artifacts of both cycles must be uploaded"
+expect_calls '^kubo add flightbag-airac-' 8 "all artifacts of both cycles must be uploaded"
 expect_calls "^kubo add flightbag-airac-2026-10-29/airspace.pmtiles $airspace_cid\$" 1 "the node must store the computed CID"
 expect_calls '^kubo pin flightbag-airac-2026-1' 2 "each cycle directory must be pinned"
 directory="$(jq -r "$nasr_current.ipfs_directory_cid" "$site/cycles.json")"
@@ -135,12 +135,12 @@ expect_output 'required_failed=false' "run with a failing recorded gateway"
 unknob gateway-down
 
 # A provider that dropped a recorded cycle gets it again, without touching the Release.
-for pinned in "$directory" "$airspace_cid" "$(raw_cid "$rel/airac-2026-10-29/cifp_procedures.bin")"; do
+for pinned in "$directory" "$airspace_cid" "$(raw_cid "$rel/airac-2026-10-29/nasr_waypoints.bin")" "$(raw_cid "$rel/airac-2026-10-29/cifp_procedures.bin")" "$(raw_cid "$rel/airac-2026-10-29/dtpp_plates.bin")"; do
     curl -fsS -X POST "$base/api/v0/pin/rm?arg=$pinned" >/dev/null
 done
 forget_calls
 run_ok "2026-11-24T19:00:00Z" "${kubo_env[@]}"
-expect_calls '^kubo add flightbag-airac-2026-10-29/' 2 "a dropped cycle must be uploaded again"
+expect_calls '^kubo add flightbag-airac-2026-10-29/' 4 "a dropped cycle must be uploaded again"
 expect_calls "^kubo pin flightbag-airac-2026-10-29 $directory\$" 1 "a dropped cycle must be pinned again"
 [ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG" >&2; fail "restoring a dropped cycle must not write a Release"; }
 expect_output 'deploy=false' "run restoring a dropped cycle"
@@ -152,7 +152,7 @@ curl -fsS "$(jq -r "$nasr_current.ipfs_url" "$site/cycles.json")" | cmp -s - "$r
 curl -fsS -X POST -F "file=@$root/LICENSE" "$base/api/v0/add?cid-version=1&raw-leaves=true&chunker=size-1048576&pin=true&pin-name=flightbag-study-licence" >/dev/null
 curl -fsS -X POST "$base/api/v0/pin/rm?arg=$(raw_cid "$rel/airac-2026-11-26/cifp_procedures.bin")" >/dev/null
 curl -fsS -X POST -F "file=@$rel/airac-2026-11-26/cifp_procedures.bin" "$base/api/v0/add?cid-version=1&raw-leaves=true&chunker=size-1048576&pin=true&pin-name=flightbag-airac-2026-01-01/still-listed" >/dev/null
-for edition in nasr-2026-12-24 cifp-2026-12-24 nasr-2027-01-21 cifp-2027-01-21; do post "$edition" "first posting"; done
+for edition in nasr-2026-12-24 waypoints-2026-12-24 cifp-2026-12-24 dtpp-2026-12-24 nasr-2027-01-21 waypoints-2027-01-21 cifp-2027-01-21 dtpp-2027-01-21; do post "$edition" "first posting"; done
 
 forget_calls
 run_ok "2026-11-26T09:01:00Z" "${psa_env[@]}"
@@ -169,9 +169,9 @@ expect_calls ' unpin ' 0 "nothing may be unpinned while the deployed manifest is
 
 forget_calls
 run_ok "2026-12-24T09:02:00Z" "${psa_env[@]}"
-expect_calls '^kubo unpin flightbag-airac-2026-10-29' 3 "the cycle before the previous one must be unpinned on the node"
+expect_calls '^kubo unpin flightbag-airac-2026-10-29' 5 "the cycle before the previous one must be unpinned on the node"
 expect_calls '^psa unpin flightbag-airac-2026-10-29 ' 1 "the cycle before the previous one must be unpinned at the service"
-expect_calls ' unpin ' 4 "only the expired cycle may be unpinned"
+expect_calls ' unpin ' 6 "only the expired cycle may be unpinned"
 kept="$(curl -fsS -X POST "$base/api/v0/pin/ls?type=recursive&names=true&stream=true" | jq -r '.Name' | sort | tr '\n' ' ')"
 for name in flightbag-study-licence flightbag-airac-2026-01-01/still-listed flightbag-airac-2026-11-26 flightbag-airac-2026-12-24; do
     [[ " $kept" == *" $name "* ]] || fail "$name must stay pinned (kept: $kept)"
