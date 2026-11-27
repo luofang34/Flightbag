@@ -118,7 +118,9 @@ case "$sub" in
         [ ! -e "$FAKE_UPSTREAM/fail-build-$product-$date" ] || exit 1
         case "$product" in
             nasr) artifact=airspace.pmtiles manifest=manifest.json ;;
+            waypoints) artifact=nasr_waypoints.bin manifest=waypoints_faa_nasr_waypoints.json ;;
             cifp) artifact=cifp_procedures.bin manifest=cifp_faa_cifp.json ;;
+            dtpp) artifact=dtpp_plates.bin manifest=dtpp_faa_dtpp.json ;;
         esac
         mkdir -p "$out"
         printf '%s %s %s\n' "$product" "$date" "$(cat "$posting")" >"$out/$artifact"
@@ -136,18 +138,33 @@ case "$sub" in
         base="$(jq -n --argjson c "$cycle" '{schema_version: 1, disclaimer: "test", cycle_index: 0,
             airac_code: $c.airac_code, effective_date: $c.effective_date, expires_date: $c.expires_date,
             effective_from_utc: $c.effective_from_utc, effective_until_utc: $c.effective_until_utc}')"
-        if [ "$product" = "nasr" ]; then
-            jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
-                edition_id: "test-nasr", airspace_pmtiles: $r,
-                upstream_nasr: {authority: "faa_nasr", url: "https://upstream.invalid", filename: "n.zip", size_bytes: 1, sha256_hex: $u},
-                counts: {total: 0, class_b: 0, class_c: 0, class_d: 0, class_e: 0, sua: 0}}' >"$out/$manifest"
-        else
-            jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
-                edition_id: "test-cifp", authority: "faa_cifp", upstream_url: "https://upstream.invalid",
-                upstream_sha256_hex: $u, cifp_binary: ($r | {file, size_bytes, sha256_hex, bounds}),
-                counts: {airports: 0, vhf_navaids: 0, ndbs: 0, enroute_waypoints: 0, terminal_waypoints: 0,
-                    runway_thresholds: 0, airways: 0, airway_fixes: 0, sids: 0, stars: 0, approaches: 0, procedure_legs: 0}}' >"$out/$manifest"
-        fi
+        case "$product" in
+            nasr)
+                jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
+                    edition_id: "test-nasr", airspace_pmtiles: $r,
+                    upstream_nasr: {authority: "faa_nasr", url: "https://upstream.invalid", filename: "n.zip", size_bytes: 1, sha256_hex: $u},
+                    counts: {total: 0, class_b: 0, class_c: 0, class_d: 0, class_e: 0, sua: 0}}' >"$out/$manifest"
+                ;;
+            waypoints)
+                jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
+                    edition_id: "test-waypoints", authority: "faa_nasr_waypoints", upstream_url: "https://upstream.invalid",
+                    upstream_sha256_hex: $u, waypoints_binary: ($r | {file, size_bytes, sha256_hex, bounds}),
+                    counts: {airports: 0, navaids: 0, fixes: 0, total: 0}}' >"$out/$manifest"
+                ;;
+            cifp)
+                jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
+                    edition_id: "test-cifp", authority: "faa_cifp", upstream_url: "https://upstream.invalid",
+                    upstream_sha256_hex: $u, cifp_binary: ($r | {file, size_bytes, sha256_hex, bounds}),
+                    counts: {airports: 0, vhf_navaids: 0, ndbs: 0, enroute_waypoints: 0, terminal_waypoints: 0,
+                        runway_thresholds: 0, airways: 0, airway_fixes: 0, sids: 0, stars: 0, approaches: 0, procedure_legs: 0}}' >"$out/$manifest"
+                ;;
+            dtpp)
+                jq -n --argjson b "$base" --argjson r "$record" --arg u "$upstream_sha" '$b + {
+                    edition_id: "test-dtpp", authority: "faa_dtpp", upstream_url: "https://upstream.invalid",
+                    upstream_sha256_hex: $u, dtpp_binary: ($r | {file, size_bytes, sha256_hex, bounds}),
+                    counts: {airports: 0, plate_records: 0, unique_pdfs: 0}}' >"$out/$manifest"
+                ;;
+        esac
         ;;
 esac
 FAKE
@@ -180,7 +197,7 @@ post() { mkdir -p "$FAKE_UPSTREAM" && printf '%s' "$2" >"$FAKE_UPSTREAM/$1"; }
 reset_world() {
     rm -rf "$FAKE_GH_ROOT" "$FAKE_UPSTREAM" "$site" "$scratch/live"
     mkdir -p "$FAKE_GH_ROOT" "$FAKE_UPSTREAM"
-    for edition in nasr-2026-10-29 cifp-2026-10-29 nasr-2026-11-26 cifp-2026-11-26; do
+    for edition in nasr-2026-10-29 waypoints-2026-10-29 cifp-2026-10-29 dtpp-2026-10-29 nasr-2026-11-26 waypoints-2026-11-26 cifp-2026-11-26 dtpp-2026-11-26; do
         post "$edition" "first posting"
     done
 }

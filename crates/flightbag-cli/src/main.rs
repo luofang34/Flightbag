@@ -19,8 +19,16 @@ use flightbag_nasr::cifp::{
     write_cifp_pack,
 };
 use flightbag_nasr::cycles::{CycleSpec, now_utc, resolve_cycle};
+use flightbag_nasr::dtpp::{
+    DEFAULT_DTPP_AIRPORTS, DtppCounts, compile_dtpp_records, dtpp_metafile_url,
+    fetch_dtpp_metafile, fingerprint_local_dtpp_metafile, parse_dtpp_metafile,
+    select_curated_plates, write_dtpp_pack,
+};
 use flightbag_nasr::fetch::{
     Transport, UreqTransport, fetch_nasr_zip, fingerprint_local_zip, probe_upstream_archive,
+};
+use flightbag_nasr::waypoints::{
+    WaypointsCounts, compile_nasr_waypoints_zip, write_waypoints_pack,
 };
 use flightbag_nasr::{GeoBbox, NasrAirspaceCounts, compile_nasr_airspace_zip};
 use flightbag_tiles::{
@@ -37,10 +45,14 @@ EXPERIMENTAL PROTOTYPE — NOT FOR NAVIGATION OR FLIGHT.
 Usage:
   flightbag plan [--now <YYYY-MM-DDTHH:MM:SSZ>]
   flightbag probe-nasr [--cycle <current|upcoming|YYYY-MM-DD>]
+  flightbag probe-waypoints [--cycle <current|upcoming|YYYY-MM-DD>]
   flightbag probe-cifp [--cycle <current|upcoming|YYYY-MM-DD>]
+  flightbag probe-dtpp [--cycle <current|upcoming|YYYY-MM-DD>]
   flightbag probe-charts [--cycle <current|upcoming|YYYY-MM-DD>] [--series <all|vfr-all|vfr-sectional|vfr-terminal|ifr-low|ifr-high>]
   flightbag build-nasr --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]
+  flightbag build-waypoints --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--skip-qa-floors]
   flightbag build-cifp --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--zip-path <FILE>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--skip-qa-floors]
+  flightbag build-dtpp --out-dir <DIR> [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--metafile-path <FILE>] [--airports <CSV>] [--threads <N>] [--skip-qa-floors]
   flightbag build-charts --out-dir <DIR> [--series <vfr-all|vfr-sectional|vfr-terminal|ifr-low|ifr-high|all>] [--cycle <current|upcoming|YYYY-MM-DD>] [--cache-dir <DIR>] [--bbox <min_lon,min_lat,max_lon,max_lat>] [--max-zoom <Z>] [--threads <N>]
   flightbag manifest --cycles-dir <DIR> --url-template <TEMPLATE> --out <FILE> [--ipfs-gateway <URL>] [--ipfs-only <FILE>]...
   flightbag ipfs-cid [--write] <FILE>...
@@ -61,7 +73,13 @@ enum Command {
     ProbeNasr {
         cycle: String,
     },
+    ProbeWaypoints {
+        cycle: String,
+    },
     ProbeCifp {
+        cycle: String,
+    },
+    ProbeDtpp {
         cycle: String,
     },
     ProbeCharts {
@@ -76,12 +94,28 @@ enum Command {
         bbox: Option<String>,
         skip_qa_floors: bool,
     },
+    BuildWaypoints {
+        cycle: String,
+        cache_dir: PathBuf,
+        out_dir: PathBuf,
+        zip_path: Option<PathBuf>,
+        skip_qa_floors: bool,
+    },
     BuildCifp {
         cycle: String,
         cache_dir: PathBuf,
         out_dir: PathBuf,
         zip_path: Option<PathBuf>,
         bbox: Option<String>,
+        skip_qa_floors: bool,
+    },
+    BuildDtpp {
+        cycle: String,
+        cache_dir: PathBuf,
+        out_dir: PathBuf,
+        metafile_path: Option<PathBuf>,
+        airports: Option<String>,
+        threads: usize,
         skip_qa_floors: bool,
     },
     BuildCharts {
@@ -117,7 +151,11 @@ enum CliError {
     #[error(transparent)]
     Compile(#[from] flightbag_nasr::NasrCompileError),
     #[error(transparent)]
+    Waypoints(#[from] flightbag_nasr::WaypointsCompileError),
+    #[error(transparent)]
     Cifp(#[from] flightbag_nasr::CifpCompileError),
+    #[error(transparent)]
+    Dtpp(#[from] flightbag_nasr::DtppCompileError),
     #[error(transparent)]
     Tiles(#[from] flightbag_tiles::ArchiveError),
     #[error("invalid --bbox '{0}'; expected min_lon,min_lat,max_lon,max_lat")]
@@ -154,7 +192,9 @@ fn run() -> Result<(), CliError> {
         Command::IpfsCid(args) => ipfs::run_ipfs_cid(&args),
         Command::IpfsDir(args) => ipfs::run_ipfs_dir(&args),
         Command::ProbeNasr { cycle } => run_probe_nasr(&cycle),
+        Command::ProbeWaypoints { cycle } => run_probe_nasr(&cycle),
         Command::ProbeCifp { cycle } => run_probe_cifp(&cycle),
+        Command::ProbeDtpp { cycle } => run_probe_dtpp(&cycle),
         Command::ProbeCharts { cycle, series } => run_probe_charts(&cycle, &series),
         Command::BuildNasr {
             cycle,
@@ -171,6 +211,19 @@ fn run() -> Result<(), CliError> {
             bbox.as_deref(),
             skip_qa_floors,
         ),
+        Command::BuildWaypoints {
+            cycle,
+            cache_dir,
+            out_dir,
+            zip_path,
+            skip_qa_floors,
+        } => run_build_waypoints(
+            &cycle,
+            &cache_dir,
+            &out_dir,
+            zip_path.as_deref(),
+            skip_qa_floors,
+        ),
         Command::BuildCifp {
             cycle,
             cache_dir,
@@ -184,6 +237,23 @@ fn run() -> Result<(), CliError> {
             &out_dir,
             zip_path.as_deref(),
             bbox.as_deref(),
+            skip_qa_floors,
+        ),
+        Command::BuildDtpp {
+            cycle,
+            cache_dir,
+            out_dir,
+            metafile_path,
+            airports,
+            threads,
+            skip_qa_floors,
+        } => run_build_dtpp(
+            &cycle,
+            &cache_dir,
+            &out_dir,
+            metafile_path.as_deref(),
+            airports.as_deref(),
+            threads,
             skip_qa_floors,
         ),
         Command::BuildCharts {
@@ -271,6 +341,24 @@ fn run_plan(explicit_now: Option<&str>) -> Result<(), CliError> {
                 "url": cifp_url(&nasr_next),
             }
         },
+        "faa_dtpp_28_day": {
+            "current": {
+                "effective_date": nasr_cur.effective_date,
+                "expires_date": nasr_cur.expires_date,
+                "airac_code": nasr_cur.airac_code,
+                "effective_from_utc": nasr_cur.effective_from_utc,
+                "effective_until_utc": nasr_cur.effective_until_utc,
+                "url": dtpp_metafile_url(&nasr_cur),
+            },
+            "upcoming": {
+                "effective_date": nasr_next.effective_date,
+                "expires_date": nasr_next.expires_date,
+                "airac_code": nasr_next.airac_code,
+                "effective_from_utc": nasr_next.effective_from_utc,
+                "effective_until_utc": nasr_next.effective_until_utc,
+                "url": dtpp_metafile_url(&nasr_next),
+            }
+        },
         "faa_charts_56_day": {
             "current": chart_cur,
             "upcoming": chart_next,
@@ -306,6 +394,26 @@ fn run_probe_cifp(cycle: &str) -> Result<(), CliError> {
     let resolved = resolve_cycle(spec, now_utc())?;
     let transport = UreqTransport::new();
     let probe = probe_upstream_archive(&transport, &cifp_url(&resolved))?;
+    let report = serde_json::json!({
+        "cycle": resolved.effective_date,
+        "expires_date": resolved.expires_date,
+        "airac_code": resolved.airac_code,
+        "effective_from_utc": resolved.effective_from_utc,
+        "effective_until_utc": resolved.effective_until_utc,
+        "url": probe.url,
+        "published": probe.published,
+        "upstream": probe.validators,
+    });
+    let text = serde_json::to_string_pretty(&report).map_err(|e| CliError::Json(e.to_string()))?;
+    println!("{text}");
+    Ok(())
+}
+
+fn run_probe_dtpp(cycle: &str) -> Result<(), CliError> {
+    let spec = CycleSpec::parse(cycle)?;
+    let resolved = resolve_cycle(spec, now_utc())?;
+    let transport = UreqTransport::new();
+    let probe = probe_upstream_archive(&transport, &dtpp_metafile_url(&resolved))?;
     let report = serde_json::json!({
         "cycle": resolved.effective_date,
         "expires_date": resolved.expires_date,
@@ -394,6 +502,127 @@ fn run_build_nasr(
         stats.size_bytes,
         manifest_path.display(),
         vfr_style_path.display()
+    );
+    let summary =
+        serde_json::to_string_pretty(&published).map_err(|e| CliError::Json(e.to_string()))?;
+    println!("{summary}");
+    Ok(())
+}
+
+fn run_build_waypoints(
+    cycle: &str,
+    cache_dir: &Path,
+    out_dir: &Path,
+    zip_path: Option<&Path>,
+    skip_qa_floors: bool,
+) -> Result<(), CliError> {
+    let spec = CycleSpec::parse(cycle)?;
+    let resolved = resolve_cycle(spec, now_utc())?;
+    let nasr_fp = match zip_path {
+        Some(local_zip) => fingerprint_local_zip(&resolved, local_zip)?,
+        None => {
+            let transport = UreqTransport::new();
+            fetch_nasr_zip(&transport, &resolved, cache_dir)?
+        }
+    };
+
+    eprintln!(
+        "==> Compiling NASR waypoints {} (AIRAC {}) from {} ({} bytes, cached={})",
+        resolved.effective_date,
+        resolved.airac_code,
+        nasr_fp.path.display(),
+        nasr_fp.size_bytes,
+        nasr_fp.cached
+    );
+
+    let compiled = compile_nasr_waypoints_zip(&nasr_fp.path)?;
+    if !skip_qa_floors {
+        verify_national_waypoints_qa_floors(&compiled.counts)?;
+    }
+
+    let bin_path = out_dir.join("nasr_waypoints.bin");
+    let manifest_path = out_dir.join("waypoints_faa_nasr_waypoints.json");
+    let (_core_manifest, published) =
+        write_waypoints_pack(&compiled, &resolved, &nasr_fp, &bin_path, &manifest_path)?;
+
+    eprintln!(
+        "==> Wrote {} ({} bytes: {} airports, {} navaids, {} fixes) and {}",
+        bin_path.display(),
+        published.waypoints_binary.size_bytes,
+        compiled.counts.airports,
+        compiled.counts.navaids,
+        compiled.counts.fixes,
+        manifest_path.display()
+    );
+    let summary =
+        serde_json::to_string_pretty(&published).map_err(|e| CliError::Json(e.to_string()))?;
+    println!("{summary}");
+    Ok(())
+}
+
+fn run_build_dtpp(
+    cycle: &str,
+    cache_dir: &Path,
+    out_dir: &Path,
+    metafile_path: Option<&Path>,
+    airports: Option<&str>,
+    threads: usize,
+    skip_qa_floors: bool,
+) -> Result<(), CliError> {
+    let spec = CycleSpec::parse(cycle)?;
+    let resolved = resolve_cycle(spec, now_utc())?;
+    let dtpp_fp = match metafile_path {
+        Some(local_xml) => fingerprint_local_dtpp_metafile(&resolved, local_xml)?,
+        None => {
+            let transport = UreqTransport::new();
+            fetch_dtpp_metafile(&transport, &resolved, cache_dir)?
+        }
+    };
+
+    let custom_airports: Vec<String> = match airports {
+        Some(raw) => raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_uppercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => Vec::new(),
+    };
+    let custom_refs: Vec<&str> = custom_airports.iter().map(String::as_str).collect();
+    let roster: &[&str] = if airports.is_some() {
+        &custom_refs
+    } else {
+        DEFAULT_DTPP_AIRPORTS
+    };
+
+    eprintln!(
+        "==> Compiling d-TPP {} (AIRAC {}) from {} ({} bytes, cached={})",
+        resolved.effective_date,
+        resolved.airac_code,
+        dtpp_fp.path.display(),
+        dtpp_fp.size_bytes,
+        dtpp_fp.cached
+    );
+
+    let raw_records = parse_dtpp_metafile(&dtpp_fp.path, &resolved.airac_code, roster)?;
+    let selected = select_curated_plates(raw_records);
+    let compiled = compile_dtpp_records(&resolved, selected, cache_dir, threads, None)?;
+    if airports.is_none() && !skip_qa_floors {
+        verify_national_dtpp_qa_floors(&compiled.counts)?;
+    }
+
+    let bin_path = out_dir.join("dtpp_plates.bin");
+    let manifest_path = out_dir.join("dtpp_faa_dtpp.json");
+    let (_core_manifest, published) =
+        write_dtpp_pack(&compiled, &resolved, &dtpp_fp, &bin_path, &manifest_path)?;
+
+    eprintln!(
+        "==> Wrote {} ({} bytes: {} airports, {} plates, {} PDFs) and {}",
+        bin_path.display(),
+        published.dtpp_binary.size_bytes,
+        compiled.counts.airports,
+        compiled.counts.plate_records,
+        compiled.counts.unique_pdfs,
+        manifest_path.display()
     );
     let summary =
         serde_json::to_string_pretty(&published).map_err(|e| CliError::Json(e.to_string()))?;
@@ -696,10 +925,14 @@ fn parse_args(args: &[String]) -> Result<Command, CliError> {
         "ipfs-cid" => ipfs::parse_ipfs_cid(args),
         "ipfs-dir" => ipfs::parse_ipfs_dir(args),
         "probe-nasr" => parse_probe_nasr(args),
+        "probe-waypoints" => parse_probe_waypoints(args),
         "probe-cifp" => parse_probe_cifp(args),
+        "probe-dtpp" => parse_probe_dtpp(args),
         "probe-charts" => parse_probe_charts(args),
         "build-nasr" => parse_build_nasr(args),
+        "build-waypoints" => parse_build_waypoints(args),
         "build-cifp" => parse_build_cifp(args),
+        "build-dtpp" => parse_build_dtpp(args),
         "build-charts" => parse_build_charts(args),
         "manifest" => parse_manifest_cmd(args),
         "sync" => parse_sync_cmd(args),
@@ -721,6 +954,52 @@ fn parse_plan(args: &[String]) -> Result<Command, CliError> {
         }
         Some(other) => Err(CliError::Usage(format!("unknown plan argument '{other}'"))),
     }
+}
+
+fn parse_probe_waypoints(args: &[String]) -> Result<Command, CliError> {
+    let mut cycle = "current".to_owned();
+    let mut idx = 1_usize;
+    while let Some(flag) = args.get(idx).map(String::as_str) {
+        match flag {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--cycle" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cycle".into()))?;
+                cycle.clone_from(val);
+                idx += 2;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown probe-waypoints argument '{other}'"
+                )));
+            }
+        }
+    }
+    Ok(Command::ProbeWaypoints { cycle })
+}
+
+fn parse_probe_dtpp(args: &[String]) -> Result<Command, CliError> {
+    let mut cycle = "current".to_owned();
+    let mut idx = 1_usize;
+    while let Some(flag) = args.get(idx).map(String::as_str) {
+        match flag {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--cycle" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cycle".into()))?;
+                cycle.clone_from(val);
+                idx += 2;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown probe-dtpp argument '{other}'"
+                )));
+            }
+        }
+    }
+    Ok(Command::ProbeDtpp { cycle })
 }
 
 fn parse_probe_cifp(args: &[String]) -> Result<Command, CliError> {
@@ -866,6 +1145,148 @@ fn parse_build_nasr(args: &[String]) -> Result<Command, CliError> {
         out_dir: required_out,
         zip_path,
         bbox,
+        skip_qa_floors,
+    })
+}
+
+fn parse_build_waypoints(args: &[String]) -> Result<Command, CliError> {
+    let mut cycle = "current".to_owned();
+    let mut cache_dir = PathBuf::from("data/cache");
+    let mut out_dir: Option<PathBuf> = None;
+    let mut zip_path: Option<PathBuf> = None;
+    let mut skip_qa_floors = false;
+
+    let mut idx = 1_usize;
+    while let Some(flag) = args.get(idx).map(String::as_str) {
+        match flag {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--cycle" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cycle".into()))?;
+                cycle.clone_from(val);
+                idx += 2;
+            }
+            "--cache-dir" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cache-dir".into()))?;
+                cache_dir = PathBuf::from(val);
+                idx += 2;
+            }
+            "--out-dir" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --out-dir".into()))?;
+                out_dir = Some(PathBuf::from(val));
+                idx += 2;
+            }
+            "--zip-path" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --zip-path".into()))?;
+                zip_path = Some(PathBuf::from(val));
+                idx += 2;
+            }
+            "--skip-qa-floors" => {
+                skip_qa_floors = true;
+                idx += 1;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown build-waypoints argument '{other}'"
+                )));
+            }
+        }
+    }
+    let required_out =
+        out_dir.ok_or_else(|| CliError::Usage("--out-dir <DIR> is required".into()))?;
+    Ok(Command::BuildWaypoints {
+        cycle,
+        cache_dir,
+        out_dir: required_out,
+        zip_path,
+        skip_qa_floors,
+    })
+}
+
+fn parse_build_dtpp(args: &[String]) -> Result<Command, CliError> {
+    let mut cycle = "current".to_owned();
+    let mut cache_dir = PathBuf::from("data/cache");
+    let mut out_dir: Option<PathBuf> = None;
+    let mut metafile_path: Option<PathBuf> = None;
+    let mut airports: Option<String> = None;
+    let mut threads: usize = 6;
+    let mut skip_qa_floors = false;
+
+    let mut idx = 1_usize;
+    while let Some(flag) = args.get(idx).map(String::as_str) {
+        match flag {
+            "-h" | "--help" => return Ok(Command::Help),
+            "--cycle" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cycle".into()))?;
+                cycle.clone_from(val);
+                idx += 2;
+            }
+            "--cache-dir" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --cache-dir".into()))?;
+                cache_dir = PathBuf::from(val);
+                idx += 2;
+            }
+            "--out-dir" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --out-dir".into()))?;
+                out_dir = Some(PathBuf::from(val));
+                idx += 2;
+            }
+            "--metafile-path" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --metafile-path".into()))?;
+                metafile_path = Some(PathBuf::from(val));
+                idx += 2;
+            }
+            "--airports" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --airports".into()))?;
+                airports = Some(val.clone());
+                idx += 2;
+            }
+            "--threads" => {
+                let val = args
+                    .get(idx + 1)
+                    .ok_or_else(|| CliError::Usage("missing value for --threads".into()))?;
+                threads = val
+                    .parse::<usize>()
+                    .map_err(|_| CliError::Usage(format!("invalid --threads '{val}'")))?;
+                idx += 2;
+            }
+            "--skip-qa-floors" => {
+                skip_qa_floors = true;
+                idx += 1;
+            }
+            other => {
+                return Err(CliError::Usage(format!(
+                    "unknown build-dtpp argument '{other}'"
+                )));
+            }
+        }
+    }
+    let required_out =
+        out_dir.ok_or_else(|| CliError::Usage("--out-dir <DIR> is required".into()))?;
+    Ok(Command::BuildDtpp {
+        cycle,
+        cache_dir,
+        out_dir: required_out,
+        metafile_path,
+        airports,
+        threads,
         skip_qa_floors,
     })
 }
@@ -1206,6 +1627,38 @@ fn verify_national_cifp_qa_floors(counts: &CifpCounts) -> Result<(), CliError> {
     Ok(())
 }
 
+fn verify_national_waypoints_qa_floors(counts: &WaypointsCounts) -> Result<(), CliError> {
+    let checks = [
+        ("Waypoints Airports", counts.airports, 5_000),
+        ("Waypoints Navaids", counts.navaids, 1_000),
+        ("Waypoints Fixes", counts.fixes, 40_000),
+    ];
+    for (label, actual, min_expected) in checks {
+        if actual < min_expected {
+            return Err(CliError::QaFloor(format!(
+                "{label} count {actual} < expected national floor {min_expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_national_dtpp_qa_floors(counts: &DtppCounts) -> Result<(), CliError> {
+    let checks = [
+        ("d-TPP Airports", counts.airports, 10),
+        ("d-TPP Plate Records", counts.plate_records, 50),
+        ("d-TPP Unique PDFs", counts.unique_pdfs, 50),
+    ];
+    for (label, actual, min_expected) in checks {
+        if actual < min_expected {
+            return Err(CliError::QaFloor(format!(
+                "{label} count {actual} < expected curated floor {min_expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,6 +1689,66 @@ mod tests {
             probe_cifp.ok(),
             Some(Command::ProbeCifp {
                 cycle: "2026-10-29".into()
+            })
+        );
+
+        let probe_wpt = parse_args(&[
+            "probe-waypoints".into(),
+            "--cycle".into(),
+            "2026-11-26".into(),
+        ]);
+        assert_eq!(
+            probe_wpt.ok(),
+            Some(Command::ProbeWaypoints {
+                cycle: "2026-11-26".into()
+            })
+        );
+
+        let probe_dtpp = parse_args(&["probe-dtpp".into(), "--cycle".into(), "2026-11-26".into()]);
+        assert_eq!(
+            probe_dtpp.ok(),
+            Some(Command::ProbeDtpp {
+                cycle: "2026-11-26".into()
+            })
+        );
+
+        let build_wpt = parse_args(&[
+            "build-waypoints".into(),
+            "--cycle".into(),
+            "2026-11-26".into(),
+            "--out-dir".into(),
+            "dist/cycles/2026-11-26".into(),
+        ]);
+        assert_eq!(
+            build_wpt.ok(),
+            Some(Command::BuildWaypoints {
+                cycle: "2026-11-26".into(),
+                cache_dir: PathBuf::from("data/cache"),
+                out_dir: PathBuf::from("dist/cycles/2026-11-26"),
+                zip_path: None,
+                skip_qa_floors: false,
+            })
+        );
+
+        let build_dtpp = parse_args(&[
+            "build-dtpp".into(),
+            "--cycle".into(),
+            "2026-11-26".into(),
+            "--out-dir".into(),
+            "dist/cycles/2026-11-26".into(),
+            "--airports".into(),
+            "KEWR,N51".into(),
+        ]);
+        assert_eq!(
+            build_dtpp.ok(),
+            Some(Command::BuildDtpp {
+                cycle: "2026-11-26".into(),
+                cache_dir: PathBuf::from("data/cache"),
+                out_dir: PathBuf::from("dist/cycles/2026-11-26"),
+                metafile_path: None,
+                airports: Some("KEWR,N51".into()),
+                threads: 6,
+                skip_qa_floors: false,
             })
         );
 
